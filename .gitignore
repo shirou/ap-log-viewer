@@ -1,0 +1,24 @@
+docs
+
+# Node / frontend
+node_modules
+internal/web/dist
+*.local
+*.tsbuildinfo
+
+# Go
+/server
+/cmd/server/server
+/ap-log-viewer
+/ap-log-viewer.exe
+/build
+
+# Editor / OS
+.DS_Store
+*.log
+
+# Sample logs
+*.bin
+*.tlog
+!src/parsers/__fixtures__/*.bin
+!src/parsers/__fixtures__/*.tlog
