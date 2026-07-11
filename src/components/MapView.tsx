@@ -91,6 +91,7 @@ export default function MapView() {
   const log = useLogStore((s) => s.log);
   const loadId = useLogStore((s) => s.loadId);
   const cursorTime = useLogStore((s) => s.cursorTime);
+  const theme = useLogStore((s) => s.theme);
 
   const traj = log?.trajectory;
 
@@ -307,7 +308,7 @@ export default function MapView() {
   );
 
   return (
-    <div className="map-wrap">
+    <div className={theme === 'dark' ? 'map-wrap dark-map' : 'map-wrap'}>
       <Map
         key={loadId}
         ref={mapRef}
