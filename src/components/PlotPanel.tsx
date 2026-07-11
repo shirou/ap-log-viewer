@@ -261,7 +261,7 @@ export default function PlotPanel() {
         <span className="plot-hint">x: seconds from start · drag to zoom</span>
         {selectedFields.length > 0 && (
           <button className="chip" onClick={resetZoom} title="Reset zoom to full range (double-click also works)">
-            ⤢ Fit
+            ⤢ Reset
           </button>
         )}
         {selectedFields.map((r) => (

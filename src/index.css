@@ -16,6 +16,9 @@
   --plot-axis: #8290a3;
   --plot-grid: #2a334060;
   --plot-cursor: #f6ad55;
+  /* Drag-to-zoom selection rectangle (uPlot .u-select). */
+  --plot-select: rgba(79, 209, 197, 0.28);
+  --plot-select-border: rgba(79, 209, 197, 0.9);
   color-scheme: dark;
 }
 
@@ -35,6 +38,9 @@
   --plot-axis: #3f4854;
   --plot-grid: #aeb9c6;
   --plot-cursor: #b45309;
+  /* Drag-to-zoom selection rectangle (uPlot .u-select). */
+  --plot-select: rgba(10, 110, 102, 0.22);
+  --plot-select-border: rgba(10, 110, 102, 0.85);
   color-scheme: light;
 }
 
@@ -509,4 +515,12 @@ input[type="text"] {
   height: 4px;
   background: var(--accent);
   transition: width 0.1s;
+}
+
+/* Drag-to-zoom selection box. uPlot's default fill (rgba(0,0,0,0.07)) is
+   nearly invisible on the dark background, so override it with a clearly
+   visible accent-tinted fill plus a solid border. */
+.uplot .u-select {
+  background: var(--plot-select);
+  border: 1px solid var(--plot-select-border);
 }
