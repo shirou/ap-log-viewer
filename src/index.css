@@ -1,4 +1,5 @@
-:root {
+:root,
+:root[data-theme='dark'] {
   --bg: #0e1116;
   --panel: #161b22;
   --panel-2: #1c2330;
@@ -7,7 +8,34 @@
   --muted: #8290a3;
   --accent: #4fd1c5;
   --accent-2: #f6ad55;
+  /* Text drawn on top of an --accent fill (e.g. primary buttons). */
+  --accent-ink: #06201d;
+  /* Translucent panel for controls floating over the map. */
+  --overlay-bg: rgba(14, 17, 22, 0.85);
+  /* Plot chrome (uPlot reads these via getComputedStyle). */
+  --plot-axis: #8290a3;
+  --plot-grid: #2a334060;
+  --plot-cursor: #f6ad55;
   color-scheme: dark;
+}
+
+/* Light theme — deliberately high-contrast so the viewer stays legible
+   outdoors in direct sunlight. */
+:root[data-theme='light'] {
+  --bg: #eceff3;
+  --panel: #ffffff;
+  --panel-2: #dde3ea;
+  --border: #7c8a9b;
+  --text: #0b1015;
+  --muted: #46515e;
+  --accent: #0a6e66;
+  --accent-2: #b45309;
+  --accent-ink: #ffffff;
+  --overlay-bg: rgba(255, 255, 255, 0.92);
+  --plot-axis: #3f4854;
+  --plot-grid: #aeb9c6;
+  --plot-cursor: #b45309;
+  color-scheme: light;
 }
 
 * {
@@ -41,7 +69,7 @@ button:hover {
 }
 button.primary {
   background: var(--accent);
-  color: #06201d;
+  color: var(--accent-ink);
   border-color: var(--accent);
   font-weight: 600;
 }
@@ -79,6 +107,11 @@ input[type="text"] {
 }
 .sidebar-toggle {
   font-size: 16px;
+  line-height: 1;
+  padding: 4px 9px;
+}
+.theme-toggle {
+  font-size: 15px;
   line-height: 1;
   padding: 4px 9px;
 }
@@ -422,7 +455,7 @@ input[type="text"] {
   position: absolute;
   bottom: 8px;
   left: 8px;
-  background: rgba(14, 17, 22, 0.8);
+  background: var(--overlay-bg);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 6px 10px;
@@ -440,7 +473,7 @@ input[type="text"] {
   flex-direction: column;
   gap: 6px;
   align-items: flex-start;
-  background: rgba(14, 17, 22, 0.85);
+  background: var(--overlay-bg);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 8px 10px;

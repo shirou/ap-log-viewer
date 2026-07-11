@@ -4,6 +4,35 @@ import { fieldKey } from '../model/log.ts';
 
 export type Status = 'idle' | 'parsing' | 'ready' | 'error';
 
+export type Theme = 'light' | 'dark';
+
+// Resolve the startup theme. An inline script in index.html already stamped
+// data-theme onto <html> before first paint (to avoid a flash), so trust that
+// first; fall back to the saved preference, then the OS setting, then dark.
+function initialTheme(): Theme {
+  if (typeof document !== 'undefined') {
+    const attr = document.documentElement.getAttribute('data-theme');
+    if (attr === 'light' || attr === 'dark') return attr;
+  }
+  if (typeof window !== 'undefined') {
+    const saved = window.localStorage?.getItem('theme');
+    if (saved === 'light' || saved === 'dark') return saved;
+    if (window.matchMedia?.('(prefers-color-scheme: light)').matches) return 'light';
+  }
+  return 'dark';
+}
+
+function applyTheme(theme: Theme) {
+  if (typeof document !== 'undefined') {
+    document.documentElement.setAttribute('data-theme', theme);
+  }
+  try {
+    window.localStorage?.setItem('theme', theme);
+  } catch {
+    // localStorage may be unavailable (private mode); theme still applies for the session.
+  }
+}
+
 // The in-flight parse worker. Kept outside the reactive store; only one parse
 // runs at a time so a slow earlier parse can't clobber a newer one.
 let activeWorker: Worker | null = null;
@@ -17,6 +46,9 @@ interface LogState {
   /** Increments on each loaded log; used as a stable remount key for the map. */
   loadId: number;
 
+  // UI theme (persisted). Drives the CSS custom properties and plot colors.
+  theme: Theme;
+
   // Plot selection.
   selectedFields: FieldRef[];
 
@@ -28,6 +60,8 @@ interface LogState {
   stepIntervalSec: number; // seconds of log-time per tick in interval mode
   loop: boolean;
 
+  setTheme: (t: Theme) => void;
+  toggleTheme: () => void;
   parseFile: (file: File) => void;
   reset: () => void;
   /** Drop one message type from memory (frees its columns; map trajectory is kept). */
@@ -71,6 +105,7 @@ export const useLogStore = create<LogState>((set, get) => ({
   fileName: null,
   log: null,
   loadId: 0,
+  theme: initialTheme(),
   selectedFields: [],
   cursorTime: 0,
   playing: false,
@@ -78,6 +113,16 @@ export const useLogStore = create<LogState>((set, get) => ({
   stepMode: 'continuous',
   stepIntervalSec: 1,
   loop: false,
+
+  setTheme: (t) => {
+    applyTheme(t);
+    set({ theme: t });
+  },
+  toggleTheme: () => {
+    const t: Theme = get().theme === 'dark' ? 'light' : 'dark';
+    applyTheme(t);
+    set({ theme: t });
+  },
 
   parseFile: (file) => {
     // Cancel any in-flight parse so a slow earlier worker can't post a stale

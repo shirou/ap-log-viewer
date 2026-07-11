@@ -15,6 +15,8 @@ export default function App() {
   const fileName = useLogStore((s) => s.fileName);
   const log = useLogStore((s) => s.log);
   const reset = useLogStore((s) => s.reset);
+  const theme = useLogStore((s) => s.theme);
+  const toggleTheme = useLogStore((s) => s.toggleTheme);
   const [tab, setTab] = useState<Tab>('fields');
   const [sidebarOpen, setSidebarOpen] = useState(
     () => typeof window === 'undefined' || window.innerWidth > 768,
@@ -43,6 +45,14 @@ export default function App() {
             {log.source.toUpperCase()} · {Object.keys(log.messages).length} msg types
           </span>
         )}
+        <button
+          className="theme-toggle"
+          aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          onClick={toggleTheme}
+        >
+          {theme === 'dark' ? '☀' : '☾'}
+        </button>
         {ready && <button onClick={reset}>Open another log</button>}
       </header>
 

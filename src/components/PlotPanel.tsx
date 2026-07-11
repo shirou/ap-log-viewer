@@ -4,7 +4,19 @@ import 'uplot/dist/uPlot.min.css';
 import { useLogStore } from '../store/logStore.ts';
 import { fieldKey, type FieldRef, type LogData } from '../model/log.ts';
 
-const PALETTE = ['#4fd1c5', '#f6ad55', '#63b3ed', '#fc8181', '#b794f4', '#68d391', '#f687b3'];
+// Series colours per theme. The light set is darker/more saturated so the lines
+// keep enough contrast against a white plot in daylight.
+const PALETTES = {
+  dark: ['#4fd1c5', '#f6ad55', '#63b3ed', '#fc8181', '#b794f4', '#68d391', '#f687b3'],
+  light: ['#0a6e66', '#b45309', '#1d4ed8', '#c2262d', '#6d28d9', '#15803d', '#be185d'],
+} as const;
+
+// Read a CSS custom property off <html>, falling back when unavailable (SSR/tests).
+function cssVar(name: string, fallback: string): string {
+  if (typeof getComputedStyle === 'undefined') return fallback;
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback;
+}
 
 // How long the cursor must rest before the value tooltip appears. Without this
 // delay the tooltip would flicker on every pixel of mouse movement.
@@ -89,6 +101,8 @@ export default function PlotPanel() {
   const toggleField = useLogStore((s) => s.toggleField);
   const cursorTime = useLogStore((s) => s.cursorTime);
   const setCursorTime = useLogStore((s) => s.setCursorTime);
+  const theme = useLogStore((s) => s.theme);
+  const palette = PALETTES[theme];
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<uPlot | null>(null);
@@ -126,7 +140,7 @@ export default function PlotPanel() {
       const rows = built.labels
         .map((label, i) => {
           const v = u.data[i + 1]?.[idx];
-          const color = PALETTE[i % PALETTE.length];
+          const color = palette[i % palette.length];
           return `<div class="tt-row"><span class="tt-dot" style="background:${color}"></span><span class="tt-label">${label}</span><span class="tt-val">${fmtVal(v)}</span></div>`;
         })
         .join('');
@@ -142,13 +156,17 @@ export default function PlotPanel() {
       tooltip.style.transform = `translate(${Math.max(0, x)}px, ${Math.max(0, y)}px)`;
     };
 
+    const axisStroke = cssVar('--plot-axis', '#8290a3');
+    const gridStroke = cssVar('--plot-grid', '#2a334060');
+    const cursorStroke = cssVar('--plot-cursor', '#f6ad55');
+
     const opts: uPlot.Options = {
       width: el.clientWidth || 600,
       height: el.clientHeight || 240,
       scales: { x: { time: false } },
       axes: [
-        { stroke: '#8290a3', grid: { stroke: '#2a334060' }, values: (_u, vals) => vals.map((v) => `${v}s`) },
-        { stroke: '#8290a3', grid: { stroke: '#2a334060' } },
+        { stroke: axisStroke, grid: { stroke: gridStroke }, values: (_u, vals) => vals.map((v) => `${v}s`) },
+        { stroke: axisStroke, grid: { stroke: gridStroke } },
       ],
       legend: { show: true },
       cursor: { drag: { x: true, y: false } },
@@ -156,7 +174,7 @@ export default function PlotPanel() {
         { label: 't (s)' },
         ...built.labels.map((label, i) => ({
           label,
-          stroke: PALETTE[i % PALETTE.length],
+          stroke: palette[i % palette.length],
           width: 1.4,
           spanGaps: true,
           points: { show: false },
@@ -182,7 +200,7 @@ export default function PlotPanel() {
             const left = u.valToPos(xVal, 'x', true);
             const ctx = u.ctx;
             ctx.save();
-            ctx.strokeStyle = '#f6ad55';
+            ctx.strokeStyle = cursorStroke;
             ctx.lineWidth = 1;
             ctx.beginPath();
             ctx.moveTo(left, u.bbox.top);
@@ -220,7 +238,7 @@ export default function PlotPanel() {
       u.destroy();
       plotRef.current = null;
     };
-  }, [built, log, setCursorTime]);
+  }, [built, log, setCursorTime, palette]);
 
   // Move the cursor line when the shared timeline changes.
   useEffect(() => {
