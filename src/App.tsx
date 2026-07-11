@@ -29,7 +29,9 @@ export default function App() {
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
 
   const onResizeStart = (e: React.PointerEvent<HTMLDivElement>) => {
-    const mapEl = mainRef.current?.firstElementChild as HTMLElement | null;
+    // The map is the handle's previous sibling — measure it directly rather
+    // than relying on the child order of `.main`.
+    const mapEl = e.currentTarget.previousElementSibling as HTMLElement | null;
     if (!mapEl) return;
     dragRef.current = { startY: e.clientY, startH: mapEl.getBoundingClientRect().height };
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -37,7 +39,9 @@ export default function App() {
   const onResizeMove = (e: React.PointerEvent<HTMLDivElement>) => {
     const d = dragRef.current;
     const main = mainRef.current;
-    if (!d || !main) return;
+    // Bail on hover moves (no button held) so a lost/canceled pointer can't
+    // leave the divider resizing while the mouse merely passes over it.
+    if (!d || !main || e.buttons === 0) return;
     const mainH = main.getBoundingClientRect().height;
     // Keep at least ~140px of map and ~220px for the plot + timeline below.
     const next = Math.max(140, Math.min(d.startH + (e.clientY - d.startY), mainH - 220));
@@ -124,6 +128,7 @@ export default function App() {
               onPointerDown={onResizeStart}
               onPointerMove={onResizeMove}
               onPointerUp={onResizeEnd}
+              onPointerCancel={onResizeEnd}
               onDoubleClick={() => setMapHeight(null)}
             />
             <PlotPanel />

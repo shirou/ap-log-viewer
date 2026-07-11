@@ -240,6 +240,10 @@ export default function MapView() {
   const onMapMouseDown = useCallback(
     (e: MapLayerMouseEvent) => {
       if (!measuring) return;
+      // Clear any stale suppress flag left by a prior drag that produced no
+      // `click` (movement beyond clickTolerance), so this interaction's
+      // add-click isn't swallowed.
+      suppressClickRef.current = false;
       const idx = vertexAt(e.target, e.point.x, e.point.y);
       if (idx < 0) return; // empty map: leave pan enabled; the click adds a point
       e.target.dragPan.disable();
