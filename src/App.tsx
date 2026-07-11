@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useLogStore } from './store/logStore.ts';
 import FileDropzone from './components/FileDropzone.tsx';
 import MapView from './components/MapView.tsx';
@@ -21,6 +21,32 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(
     () => typeof window === 'undefined' || window.innerWidth > 768,
   );
+
+  // Draggable split between the map (top) and the time-series plot below it.
+  // null = use the default fr ratio; a number pins the map to that pixel height.
+  const mainRef = useRef<HTMLElement>(null);
+  const [mapHeight, setMapHeight] = useState<number | null>(null);
+  const dragRef = useRef<{ startY: number; startH: number } | null>(null);
+
+  const onResizeStart = (e: React.PointerEvent<HTMLDivElement>) => {
+    const mapEl = mainRef.current?.firstElementChild as HTMLElement | null;
+    if (!mapEl) return;
+    dragRef.current = { startY: e.clientY, startH: mapEl.getBoundingClientRect().height };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const onResizeMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current;
+    const main = mainRef.current;
+    if (!d || !main) return;
+    const mainH = main.getBoundingClientRect().height;
+    // Keep at least ~140px of map and ~220px for the plot + timeline below.
+    const next = Math.max(140, Math.min(d.startH + (e.clientY - d.startY), mainH - 220));
+    setMapHeight(next);
+  };
+  const onResizeEnd = (e: React.PointerEvent<HTMLDivElement>) => {
+    dragRef.current = null;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+  };
 
   const ready = status === 'ready' && log;
 
@@ -82,8 +108,24 @@ export default function App() {
             </div>
           </aside>
 
-          <main className="main">
+          <main
+            className="main"
+            ref={mainRef}
+            style={{
+              gridTemplateRows: `${mapHeight != null ? `${mapHeight}px` : '1.2fr'} 8px 1fr auto`,
+            }}
+          >
             <MapView />
+            <div
+              className="row-resizer"
+              role="separator"
+              aria-orientation="horizontal"
+              title="Drag to resize · double-click to reset"
+              onPointerDown={onResizeStart}
+              onPointerMove={onResizeMove}
+              onPointerUp={onResizeEnd}
+              onDoubleClick={() => setMapHeight(null)}
+            />
             <PlotPanel />
             <Timeline />
           </main>

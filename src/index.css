@@ -215,9 +215,37 @@ input[type="text"] {
 
 .main {
   display: grid;
-  grid-template-rows: 1.2fr 1fr auto;
+  /* rows: map · resize handle · plot · timeline. The inline style overrides the
+     first row once the user drags the handle. */
+  grid-template-rows: 1.2fr 8px 1fr auto;
   min-height: 0;
   min-width: 0;
+}
+
+/* Draggable divider between the map and the time-series plot. */
+.row-resizer {
+  position: relative;
+  cursor: row-resize;
+  background: transparent;
+  touch-action: none;
+  z-index: 2;
+}
+.row-resizer::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 44px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--muted);
+  opacity: 0.5;
+}
+.row-resizer:hover::after,
+.row-resizer:active::after {
+  background: var(--accent);
+  opacity: 1;
 }
 
 .map-wrap {
