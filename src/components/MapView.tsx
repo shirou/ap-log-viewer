@@ -96,6 +96,7 @@ export default function MapView() {
 
   const [base, setBase] = useState<BaseKey>('osm');
   const [seamark, setSeamark] = useState(false);
+  const [controlsOpen, setControlsOpen] = useState(true);
   const [measuring, setMeasuring] = useState(false);
   const [points, setPoints] = useState<[number, number][]>([]);
   // Index of the vertex currently being dragged, or null. hoverVertex drives the
@@ -323,48 +324,65 @@ export default function MapView() {
         <DeckGLOverlay layers={layers} />
       </Map>
 
-      <div className="map-controls">
-        <label>
-          Map
-          <select value={base} onChange={(e) => setBase(e.target.value as BaseKey)}>
-            {Object.entries(BASES).map(([k, v]) => (
-              <option key={k} value={k}>
-                {v.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label title="Overlay OpenSeaMap nautical chart symbols">
-          <input type="checkbox" checked={seamark} onChange={(e) => setSeamark(e.target.checked)} />
-          Nautical chart (OpenSeaMap)
-        </label>
+      <div className={`map-controls${controlsOpen ? '' : ' collapsed'}`}>
         <button
-          className={measuring ? 'primary' : ''}
-          onClick={() => {
-            setMeasuring((m) => !m);
-            if (measuring) {
-              setPoints([]);
-              setDragIdx(null);
-              setHoverVertex(false);
-            }
-          }}
+          className="map-controls-toggle"
+          onClick={() => setControlsOpen((o) => !o)}
+          title={controlsOpen ? 'Collapse' : 'Expand'}
+          aria-expanded={controlsOpen}
         >
-          📏 Measure distance{measuring ? ' (on)' : ''}
+          <span>🗺 Layers{measuring && !controlsOpen ? ' · 📏' : ''}</span>
+          <span className="chevron">{controlsOpen ? '▾' : '▸'}</span>
         </button>
-        {measuring && (
-          <div className="measure-readout">
-            <div>
-              Total: <b>{fmtDist(totalDist)}</b> ({points.length} points)
-            </div>
-            <div className="measure-actions">
-              <button onClick={() => setPoints((p) => p.slice(0, -1))} disabled={!points.length}>
-                Undo
-              </button>
-              <button onClick={() => setPoints([])} disabled={!points.length}>
-                Clear
-              </button>
-            </div>
-            <div className="plot-hint">Click to add</div>
+        {controlsOpen && (
+          <div className="map-controls-body">
+            <label>
+              Map
+              <select value={base} onChange={(e) => setBase(e.target.value as BaseKey)}>
+                {Object.entries(BASES).map(([k, v]) => (
+                  <option key={k} value={k}>
+                    {v.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label title="Overlay OpenSeaMap nautical chart symbols">
+              <input
+                type="checkbox"
+                checked={seamark}
+                onChange={(e) => setSeamark(e.target.checked)}
+              />
+              Nautical chart (OpenSeaMap)
+            </label>
+            <button
+              className={measuring ? 'primary' : ''}
+              onClick={() => {
+                setMeasuring((m) => !m);
+                if (measuring) {
+                  setPoints([]);
+                  setDragIdx(null);
+                  setHoverVertex(false);
+                }
+              }}
+            >
+              📏 Measure distance{measuring ? ' (on)' : ''}
+            </button>
+            {measuring && (
+              <div className="measure-readout">
+                <div>
+                  Total: <b>{fmtDist(totalDist)}</b> ({points.length} points)
+                </div>
+                <div className="measure-actions">
+                  <button onClick={() => setPoints((p) => p.slice(0, -1))} disabled={!points.length}>
+                    Undo
+                  </button>
+                  <button onClick={() => setPoints([])} disabled={!points.length}>
+                    Clear
+                  </button>
+                </div>
+                <div className="plot-hint">Click to add</div>
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -485,6 +485,41 @@ input[type="text"] {
   padding: 8px 10px;
   font-size: 12px;
 }
+.map-controls.collapsed {
+  padding: 6px 8px;
+}
+/* Header row doubles as the collapse toggle; strip the default button chrome. */
+.map-controls-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--text);
+  font-weight: 600;
+  cursor: pointer;
+}
+.map-controls-toggle:hover {
+  border: none;
+  color: var(--accent);
+}
+.map-controls-toggle .chevron {
+  color: var(--muted);
+  font-size: 11px;
+}
+.map-controls-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  width: 100%;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
 .map-controls label {
   display: inline-flex;
   align-items: center;
