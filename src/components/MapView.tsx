@@ -1,5 +1,5 @@
-import { useCallback, useMemo, useState } from 'react';
-import { Map, useControl, type MapLayerMouseEvent } from 'react-map-gl/maplibre';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Map, useControl, type MapLayerMouseEvent, type MapRef } from 'react-map-gl/maplibre';
 import type { StyleSpecification } from 'maplibre-gl';
 import { MapboxOverlay, type MapboxOverlayProps } from '@deck.gl/mapbox';
 import { IconLayer, PathLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers';
@@ -98,6 +98,14 @@ export default function MapView() {
   const [seamark, setSeamark] = useState(false);
   const [measuring, setMeasuring] = useState(false);
   const [points, setPoints] = useState<[number, number][]>([]);
+  // Index of the vertex currently being dragged, or null. hoverVertex drives the
+  // cursor so grabbable points are discoverable.
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [hoverVertex, setHoverVertex] = useState(false);
+  const mapRef = useRef<MapRef>(null);
+  const didDragRef = useRef(false);
+  // maplibre fires `click` right after a vertex drag/remove; skip that one add.
+  const suppressClickRef = useRef(false);
 
   const mapStyle = useMemo(() => makeStyle(base, seamark), [base, seamark]);
 
@@ -157,7 +165,7 @@ export default function MapView() {
     });
   }, [traj, cursorTime]);
 
-  // Distance-ruler layers: line, vertices, and cumulative-distance labels.
+  // Distance-ruler layers: line, draggable vertices, and cumulative labels.
   const measureLayers = useMemo(() => {
     if (points.length === 0) return [];
     const labels = points.map((p, i) => {
@@ -176,15 +184,16 @@ export default function MapView() {
           widthUnits: 'pixels',
           widthMinPixels: 2,
         }),
+      // Solid white dots with a red ring — the draggable/removable vertices.
       new ScatterplotLayer({
         id: 'measure-pts',
         data: points,
         getPosition: (d: [number, number]) => d,
-        getFillColor: [255, 99, 99],
-        getLineColor: [255, 255, 255],
-        lineWidthMinPixels: 1,
+        getFillColor: [255, 255, 255],
+        getLineColor: [255, 99, 99],
+        lineWidthMinPixels: 2,
         stroked: true,
-        getRadius: 4,
+        getRadius: 6,
         radiusUnits: 'pixels',
       }),
       new TextLayer({
@@ -194,7 +203,7 @@ export default function MapView() {
         getText: (d: { text: string }) => d.text,
         getSize: 12,
         getColor: [255, 255, 255],
-        getPixelOffset: [0, -12],
+        getPixelOffset: [0, -14],
         background: true,
         getBackgroundColor: [180, 30, 30, 220],
         backgroundPadding: [4, 2],
@@ -213,9 +222,84 @@ export default function MapView() {
     return d;
   }, [points]);
 
+  // Pixel-space hit test: returns the index of the vertex under (x, y), or -1.
+  const HIT_PX = 12;
+  const vertexAt = useCallback(
+    (map: MapLayerMouseEvent['target'], x: number, y: number) => {
+      for (let i = points.length - 1; i >= 0; i--) {
+        const sp = map.project(points[i]);
+        if (Math.hypot(sp.x - x, sp.y - y) <= HIT_PX) return i;
+      }
+      return -1;
+    },
+    [points],
+  );
+
+  const onMapMouseDown = useCallback(
+    (e: MapLayerMouseEvent) => {
+      if (!measuring) return;
+      const idx = vertexAt(e.target, e.point.x, e.point.y);
+      if (idx < 0) return; // empty map: leave pan enabled; the click adds a point
+      e.target.dragPan.disable();
+      didDragRef.current = false;
+      setDragIdx(idx);
+    },
+    [measuring, vertexAt],
+  );
+
+  const onMapMouseMove = useCallback(
+    (e: MapLayerMouseEvent) => {
+      if (!measuring) return;
+      if (dragIdx != null) {
+        didDragRef.current = true;
+        const { lng, lat } = e.lngLat;
+        setPoints((p) => {
+          const np = p.slice();
+          np[dragIdx] = [lng, lat];
+          return np;
+        });
+        return;
+      }
+      setHoverVertex(vertexAt(e.target, e.point.x, e.point.y) >= 0);
+    },
+    [measuring, dragIdx, vertexAt],
+  );
+
+  const onMapMouseUp = useCallback(
+    (e: MapLayerMouseEvent) => {
+      if (dragIdx == null) return;
+      e.target.dragPan.enable();
+      // A press-release on a vertex without dragging removes it (like Google Maps).
+      if (!didDragRef.current) {
+        const idx = dragIdx;
+        setPoints((p) => p.filter((_, i) => i !== idx));
+      }
+      suppressClickRef.current = true;
+      setDragIdx(null);
+    },
+    [dragIdx],
+  );
+
+  // Safety net: if the mouse is released off the map, still end the drag and
+  // re-enable panning so the map can't get stuck.
+  useEffect(() => {
+    if (dragIdx == null) return;
+    const end = () => {
+      mapRef.current?.getMap().dragPan.enable();
+      suppressClickRef.current = true;
+      setDragIdx(null);
+    };
+    window.addEventListener('mouseup', end);
+    return () => window.removeEventListener('mouseup', end);
+  }, [dragIdx]);
+
   const onMapClick = useCallback(
     (e: MapLayerMouseEvent) => {
       if (!measuring) return;
+      if (suppressClickRef.current) {
+        suppressClickRef.current = false;
+        return;
+      }
       setPoints((p) => [...p, [e.lngLat.lng, e.lngLat.lat]]);
     },
     [measuring],
@@ -225,10 +309,16 @@ export default function MapView() {
     <div className="map-wrap">
       <Map
         key={loadId}
+        ref={mapRef}
         initialViewState={initialViewState}
         mapStyle={mapStyle}
         onClick={onMapClick}
-        cursor={measuring ? 'crosshair' : undefined}
+        onMouseDown={onMapMouseDown}
+        onMouseMove={onMapMouseMove}
+        onMouseUp={onMapMouseUp}
+        cursor={
+          !measuring ? undefined : dragIdx != null ? 'grabbing' : hoverVertex ? 'move' : 'crosshair'
+        }
       >
         <DeckGLOverlay layers={layers} />
       </Map>
@@ -252,7 +342,11 @@ export default function MapView() {
           className={measuring ? 'primary' : ''}
           onClick={() => {
             setMeasuring((m) => !m);
-            if (measuring) setPoints([]);
+            if (measuring) {
+              setPoints([]);
+              setDragIdx(null);
+              setHoverVertex(false);
+            }
           }}
         >
           📏 Measure distance{measuring ? ' (on)' : ''}
@@ -270,7 +364,7 @@ export default function MapView() {
                 Clear
               </button>
             </div>
-            <div className="plot-hint">Click the map to add a point</div>
+            <div className="plot-hint">Click to add</div>
           </div>
         )}
       </div>
