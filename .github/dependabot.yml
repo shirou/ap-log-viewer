@@ -1,0 +1,11 @@
+version: 2
+updates:
+  # Keep the SHA-pinned actions patched. `cooldown` refuses to propose a bump to
+  # a version less than 7 days old, so a freshly-poisoned release can't be
+  # adopted inside its (usually < 1 week) compromise-detection window.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7

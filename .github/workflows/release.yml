@@ -1,0 +1,95 @@
+name: release
+
+# Build cross-platform binaries and open a draft GitHub Release when a vX.Y.Z
+# tag is pushed. Hardened against the 2025-2026 CI/CD supply-chain attacks:
+# every action is pinned to a full commit SHA, the runner egress is monitored,
+# the token is least-privilege, and binaries ship with provenance + checksums.
+# See .github/dependabot.yml (SHA bumps w/ cooldown) and .github/workflows/zizmor.yml.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'                 # vX.Y.Z (and vX.Y.Z-rc1, etc.)
+
+permissions: {}                  # empty by default; the job elevates explicitly
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false      # never abort an in-flight release
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04        # pinned, not ubuntu-latest
+    permissions:
+      contents: write            # create the release + upload assets
+      id-token: write            # OIDC, required by the provenance attestation
+      attestations: write        # write the provenance attestation
+    steps:
+      # Run-time egress firewall + tamper monitoring. This is the control that
+      # specifically defeats the "subverted action exfiltrates CI secrets"
+      # pattern (tj-actions 2025, trivy-action 2026). Starts in audit so the
+      # first release run reports the endpoints it actually needs; then switch
+      # to block + allowed-endpoints (see README / the commented list below).
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+          # After the first run, read the harden-runner insights and switch to:
+          # egress-policy: block
+          # allowed-endpoints: >
+          #   github.com:443
+          #   api.github.com:443
+          #   objects.githubusercontent.com:443
+          #   release-assets.githubusercontent.com:443
+          #   uploads.github.com:443
+          #   registry.npmjs.org:443
+          #   proxy.golang.org:443
+          #   sum.golang.org:443
+          #   fulcio.sigstore.dev:443
+          #   rekor.sigstore.dev:443
+          #   tuf-repo-cdn.sigstore.dev:443
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false   # we publish via gh + GH_TOKEN, not git
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod      # pins Go 1.23 from the repo
+          check-latest: false
+          cache: false                 # no shared cache in a publishing job
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22'
+          package-manager-cache: false   # no cache in a publishing job (cache-poisoning)
+
+      # Frontend parser tests (vitest). Independent of the Go embed, so the
+      # order relative to the build does not matter.
+      - name: Run frontend tests
+        run: npm ci --ignore-scripts && npm test
+
+      # Builds all 6 binaries into build/. VERSION is forced to the tag via the
+      # runner-provided env var (NOT ${{ }} interpolation -> injection-safe).
+      # `make release` runs `npm ci --ignore-scripts` + `npm run build` first,
+      # which is required before the Go //go:embed step can compile.
+      - name: Cross-compile release binaries
+        run: make release VERSION="$GITHUB_REF_NAME"
+
+      - name: Generate SHA256 checksums
+        working-directory: build
+        run: sha256sum ap-log-viewer_* > checksums.txt
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: 'build/ap-log-viewer_*'
+
+      - name: Create draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}   # built-in token, never a PAT
+        run: |
+          case "$GITHUB_REF_NAME" in *-*) pre=(--prerelease);; *) pre=();; esac
+          gh release create "$GITHUB_REF_NAME" \
+            build/ap-log-viewer_* build/checksums.txt \
+            --draft --generate-notes "${pre[@]}" \
+            --title "$GITHUB_REF_NAME"

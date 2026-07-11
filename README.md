@@ -82,6 +82,34 @@ Run a built binary anywhere:
 ap-log-viewer_<version>_windows_amd64.exe -version        # print the build version
 ```
 
+## Releases
+
+Pushing a `vX.Y.Z` tag runs the GitHub Actions release workflow
+(`.github/workflows/release.yml`), which cross-compiles all six platforms and
+opens a **draft** GitHub Release with the binaries, a `checksums.txt`, and a
+build-provenance attestation. Review the draft, then publish it.
+
+```sh
+git tag v1.2.3
+git push origin v1.2.3          # -> draft release with all binaries attached
+```
+
+The pipeline is hardened against CI/CD supply-chain attacks: every action is
+pinned to a full commit SHA (auto-updated by Dependabot with a 7-day cooldown),
+the runner's network egress is monitored by `step-security/harden-runner`, the
+`GITHUB_TOKEN` is least-privilege, and workflows are linted by `zizmor`. A
+one-time repo setup is recommended: **Settings → Actions → General →** set
+default workflow permissions to read-only and require actions to be pinned to a
+full-length commit SHA.
+
+Verify a download before running it:
+
+```sh
+sha256sum -c checksums.txt      # integrity
+gh attestation verify ap-log-viewer_v1.2.3_linux_amd64 \
+  --repo shirou/ap-log-viewer   # provenance: built by this workflow from this tag
+```
+
 ## Supported logs
 
 - `.bin` / `.log`: DataFlash. Parses the self-describing format via FMT messages, so it is

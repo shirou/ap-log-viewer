@@ -1,0 +1,27 @@
+name: zizmor
+
+# Static analysis for the workflows themselves: flags unpinned actions,
+# template injection, dangerous triggers, and over-broad permissions before
+# they merge. zizmor is the de-facto GitHub Actions security linter.
+
+on:
+  pull_request:
+    paths: ['.github/workflows/**']
+  push:
+    branches: [main]
+    paths: ['.github/workflows/**']
+
+permissions: {}
+
+jobs:
+  zizmor:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      - name: Lint workflows
+        run: uvx zizmor --min-severity medium .github/workflows/
