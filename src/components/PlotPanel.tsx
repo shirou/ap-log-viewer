@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
-import { useLogStore } from '../store/logStore.ts';
+import { selectDisplayTime, useLogStore } from '../store/logStore.ts';
 import { fieldKey, type FieldRef, type LogData } from '../model/log.ts';
 
 // Series colours per theme. The light set is darker/more saturated so the lines
@@ -99,7 +99,7 @@ export default function PlotPanel() {
   const log = useLogStore((s) => s.log);
   const selectedFields = useLogStore((s) => s.selectedFields);
   const toggleField = useLogStore((s) => s.toggleField);
-  const cursorTime = useLogStore((s) => s.cursorTime);
+  const displayTime = useLogStore(selectDisplayTime);
   const setCursorTime = useLogStore((s) => s.setCursorTime);
   const theme = useLogStore((s) => s.theme);
   const palette = PALETTES[theme];
@@ -240,12 +240,13 @@ export default function PlotPanel() {
     };
   }, [built, log, setCursorTime, palette]);
 
-  // Move the cursor line when the shared timeline changes.
+  // Move the cursor line when the shared timeline changes (including to a
+  // hovered preview, so the line never contradicts the map marker).
   useEffect(() => {
     if (!log) return;
-    cursorSecRef.current = (cursorTime - log.startTime) / 1e6;
+    cursorSecRef.current = (displayTime - log.startTime) / 1e6;
     plotRef.current?.redraw(false, false);
-  }, [cursorTime, log]);
+  }, [displayTime, log]);
 
   // Reset a drag-zoom back to the full x range (same as uPlot's double-click).
   const resetZoom = () => {

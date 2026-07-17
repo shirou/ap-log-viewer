@@ -37,7 +37,7 @@ function applyTheme(theme: Theme) {
 // runs at a time so a slow earlier parse can't clobber a newer one.
 let activeWorker: Worker | null = null;
 
-interface LogState {
+export interface LogState {
   status: Status;
   progress: number;
   error: string | null;
@@ -54,6 +54,10 @@ interface LogState {
 
   // Timeline / playback (cursorTime is the single source of truth, microseconds).
   cursorTime: number;
+  /** Time under the pointer on the timeline scrub, or null when not hovering.
+   *  A preview only — it never moves cursorTime. Read it via selectDisplayTime
+   *  rather than directly, so every view previews the same instant. */
+  hoverTime: number | null;
   playing: boolean;
   speed: number; // playback multiplier for continuous mode
   stepMode: 'continuous' | 'interval';
@@ -70,6 +74,7 @@ interface LogState {
   purgeUnselected: () => void;
   toggleField: (ref: FieldRef) => void;
   setCursorTime: (t: number) => void;
+  setHoverTime: (t: number | null) => void;
   setPlaying: (p: boolean) => void;
   togglePlaying: () => void;
   setSpeed: (s: number) => void;
@@ -98,6 +103,17 @@ function defaultFields(log: LogData): FieldRef[] {
   return [];
 }
 
+/**
+ * The instant every view should render: the hovered preview when the user is
+ * pointing at the timeline, otherwise the playhead. Hover is ignored during
+ * playback so a pointer merely crossing the scrub can't hijack the live
+ * position — which also means pressing Play always escapes a stale preview.
+ * Map marker, plot cursor line and the timeline readout all read this, so they
+ * can never disagree about what is on screen.
+ */
+export const selectDisplayTime = (s: LogState): number =>
+  s.playing ? s.cursorTime : s.hoverTime ?? s.cursorTime;
+
 export const useLogStore = create<LogState>((set, get) => ({
   status: 'idle',
   progress: 0,
@@ -108,6 +124,7 @@ export const useLogStore = create<LogState>((set, get) => ({
   theme: initialTheme(),
   selectedFields: [],
   cursorTime: 0,
+  hoverTime: null,
   playing: false,
   speed: 1,
   stepMode: 'continuous',
@@ -128,7 +145,7 @@ export const useLogStore = create<LogState>((set, get) => ({
     // Cancel any in-flight parse so a slow earlier worker can't post a stale
     // result that overwrites this one.
     activeWorker?.terminate();
-    set({ status: 'parsing', progress: 0, error: null, fileName: file.name, log: null, playing: false });
+    set({ status: 'parsing', progress: 0, error: null, fileName: file.name, log: null, playing: false, hoverTime: null });
 
     const worker = new Worker(new URL('../parsers/parser.worker.ts', import.meta.url), { type: 'module' });
     activeWorker = worker;
@@ -167,7 +184,7 @@ export const useLogStore = create<LogState>((set, get) => ({
   reset: () => {
     activeWorker?.terminate();
     activeWorker = null;
-    set({ status: 'idle', progress: 0, error: null, fileName: null, log: null, selectedFields: [], cursorTime: 0, playing: false });
+    set({ status: 'idle', progress: 0, error: null, fileName: null, log: null, selectedFields: [], cursorTime: 0, hoverTime: null, playing: false });
   },
 
   purgeMessage: (name) => {
@@ -201,6 +218,11 @@ export const useLogStore = create<LogState>((set, get) => ({
     if (!log) return set({ cursorTime: t });
     const clamped = Math.max(log.startTime, Math.min(log.endTime, t));
     set({ cursorTime: clamped });
+  },
+  setHoverTime: (t) => {
+    const log = get().log;
+    if (t == null || !log) return set({ hoverTime: t });
+    set({ hoverTime: Math.max(log.startTime, Math.min(log.endTime, t)) });
   },
   setPlaying: (p) => set({ playing: p }),
   togglePlaying: () => set({ playing: !get().playing }),

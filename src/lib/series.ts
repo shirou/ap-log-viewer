@@ -39,6 +39,33 @@ export function positionAt(
   };
 }
 
+/**
+ * Value of a horizontal `<input type="range">` at pointer x, mirroring the
+ * native mapping so a hover preview and a click at the same x agree exactly:
+ * the thumb's centre travels inset by half a thumb at each end, and the value
+ * snaps to `step`. `thumbPx` must be the rendered thumb width — the caller
+ * reads it from CSS rather than assuming a browser default.
+ */
+export function rangeValueAtX(
+  x: number,
+  rect: { left: number; width: number },
+  min: number,
+  max: number,
+  step: number,
+  thumbPx: number,
+): number {
+  const track = Math.max(1, rect.width - thumbPx);
+  const ratio = Math.min(1, Math.max(0, (x - rect.left - thumbPx / 2) / track));
+  const raw = min + ratio * (max - min);
+  if (!(step > 0)) return raw;
+  let v = min + Math.round((raw - min) / step) * step;
+  // A step that does not divide the span leaves no multiple sitting on `max`.
+  // Rounding up would then land past it, so drop to the last reachable stop —
+  // which is where the native input's thumb also comes to rest.
+  if (v > max) v -= step;
+  return Math.min(max, Math.max(min, v));
+}
+
 export function formatDuration(microFromStart: number): string {
   const totalSec = Math.max(0, microFromStart) / 1e6;
   const m = Math.floor(totalSec / 60);

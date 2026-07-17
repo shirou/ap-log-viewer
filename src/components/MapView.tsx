@@ -4,7 +4,7 @@ import type { StyleSpecification } from 'maplibre-gl';
 import { MapboxOverlay, type MapboxOverlayProps } from '@deck.gl/mapbox';
 import { IconLayer, PathLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { useLogStore } from '../store/logStore.ts';
+import { selectDisplayTime, useLogStore } from '../store/logStore.ts';
 import { positionAt } from '../lib/series.ts';
 
 // Raster base maps (no API key required). OpenSeaMap is a transparent overlay.
@@ -90,7 +90,7 @@ function fmtDist(m: number): string {
 export default function MapView() {
   const log = useLogStore((s) => s.log);
   const loadId = useLogStore((s) => s.loadId);
-  const cursorTime = useLogStore((s) => s.cursorTime);
+  const displayTime = useLogStore(selectDisplayTime);
   const theme = useLogStore((s) => s.theme);
 
   const traj = log?.trajectory;
@@ -152,7 +152,7 @@ export default function MapView() {
   // is CCW so we negate. NaN heading (no source) leaves it pointing up/north.
   const cursorLayer = useMemo(() => {
     if (!traj || traj.lat.length === 0) return null;
-    const pos = positionAt(traj, cursorTime);
+    const pos = positionAt(traj, displayTime);
     if (!pos) return null;
     return new IconLayer({
       id: 'cursor',
@@ -165,7 +165,7 @@ export default function MapView() {
       getColor: [246, 173, 85],
       billboard: true,
     });
-  }, [traj, cursorTime]);
+  }, [traj, displayTime]);
 
   // Distance-ruler layers: line, draggable vertices, and cumulative labels.
   const measureLayers = useMemo(() => {
