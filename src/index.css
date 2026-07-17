@@ -386,14 +386,70 @@ input[type="text"] {
   background: var(--panel);
   flex-wrap: wrap;
 }
+/* The thumb is pinned to a known width rather than left to the browser default
+   (which differs per engine) because Timeline maps pointer x -> time through
+   it; --scrub-thumb is the single source of that number, read back in JS. */
 .timeline .scrub {
+  --scrub-thumb: 16px;
+  --scrub-track: 6px;
   flex: 1;
   min-width: 200px;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  height: var(--scrub-thumb);
+  cursor: pointer;
+}
+.timeline .scrub::-webkit-slider-runnable-track {
+  box-sizing: border-box;
+  height: var(--scrub-track);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--panel-2);
+}
+.timeline .scrub::-moz-range-track {
+  box-sizing: border-box;
+  height: var(--scrub-track);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--panel-2);
+}
+.timeline .scrub::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  box-sizing: border-box;
+  width: var(--scrub-thumb);
+  height: var(--scrub-thumb);
+  /* webkit does not centre the thumb on the track for us. */
+  margin-top: calc((var(--scrub-track) - var(--scrub-thumb)) / 2);
+  border: 1px solid var(--accent-ink);
+  border-radius: 50%;
+  background: var(--accent);
+}
+.timeline .scrub::-moz-range-thumb {
+  box-sizing: border-box;
+  width: var(--scrub-thumb);
+  height: var(--scrub-thumb);
+  border: 1px solid var(--accent-ink);
+  border-radius: 50%;
+  background: var(--accent);
+}
+.timeline .scrub:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 1px;
+}
+.timeline .scrub:focus-visible::-moz-range-thumb {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 1px;
 }
 .timeline .time {
   font-variant-numeric: tabular-nums;
   color: var(--accent);
   min-width: 110px;
+}
+/* Previewing a hovered instant: a different hue (not a dimmed one — the light
+   theme has to stay readable in sunlight) marks the readout as not the playhead. */
+.timeline .time.preview {
+  color: var(--accent-2);
 }
 .timeline label {
   color: var(--muted);

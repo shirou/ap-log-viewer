@@ -1,13 +1,25 @@
-import { useEffect } from 'react';
-import { useLogStore } from '../store/logStore.ts';
-import { formatDuration } from '../lib/series.ts';
+import { useEffect, useRef } from 'react';
+import { selectDisplayTime, useLogStore } from '../store/logStore.ts';
+import { formatDuration, rangeValueAtX } from '../lib/series.ts';
 
 const SPEEDS = [0.25, 0.5, 1, 2, 4, 8];
+
+// Width of the scrub thumb, needed to map pointer x to a time. index.css pins
+// it (browser defaults differ) and publishes it as --scrub-thumb; read it from
+// there so the two can't drift. The fallback only matters if the CSS is absent.
+const FALLBACK_THUMB_PX = 16;
+function readThumbPx(el: HTMLElement): number {
+  const v = parseFloat(getComputedStyle(el).getPropertyValue('--scrub-thumb'));
+  return Number.isFinite(v) && v > 0 ? v : FALLBACK_THUMB_PX;
+}
 
 export default function Timeline() {
   const log = useLogStore((s) => s.log);
   const cursorTime = useLogStore((s) => s.cursorTime);
+  const displayTime = useLogStore(selectDisplayTime);
   const setCursorTime = useLogStore((s) => s.setCursorTime);
+  const hoverTime = useLogStore((s) => s.hoverTime);
+  const setHoverTime = useLogStore((s) => s.setHoverTime);
   const playing = useLogStore((s) => s.playing);
   const togglePlaying = useLogStore((s) => s.togglePlaying);
   const setPlaying = useLogStore((s) => s.setPlaying);
@@ -19,6 +31,9 @@ export default function Timeline() {
   const setStepIntervalSec = useLogStore((s) => s.setStepIntervalSec);
   const loop = useLogStore((s) => s.loop);
   const setLoop = useLogStore((s) => s.setLoop);
+  // Measured once per mount: the thumb is a pseudo-element, so it can't be
+  // measured off the DOM, and its width is fixed by CSS anyway.
+  const thumbRef = useRef<number | null>(null);
 
   // Playback driver. Continuous = real-time × speed via rAF.
   // Interval = jump forward `stepIntervalSec` of log-time on each tick.
@@ -65,6 +80,23 @@ export default function Timeline() {
 
   if (!log) return null;
   const span = Math.max(1, log.endTime - log.startTime);
+  const step = span / 1000;
+  // Hover only previews while paused (see selectDisplayTime), so the readout
+  // must not advertise a preview that nothing is showing.
+  const previewing = !playing && hoverTime != null;
+
+  // Hovering the scrub previews that instant across the views without seeking.
+  const onScrubHover = (e: React.PointerEvent<HTMLInputElement>) => {
+    if (playing) return; // a preview here would be ignored; don't record one
+    if (e.pointerType !== 'mouse') return; // touch/pen: dragging already seeks
+    const el = e.currentTarget;
+    thumbRef.current ??= readThumbPx(el);
+    // Snap to the same `step` the input itself uses, so the previewed time and
+    // the time a click here would commit are identical, not merely close.
+    setHoverTime(
+      rangeValueAtX(e.clientX, el.getBoundingClientRect(), log.startTime, log.endTime, step, thumbRef.current),
+    );
+  };
 
   return (
     <div className="timeline">
@@ -77,13 +109,19 @@ export default function Timeline() {
         type="range"
         min={log.startTime}
         max={log.endTime}
-        step={span / 1000}
+        step={step}
         value={cursorTime}
         onChange={(e) => setCursorTime(Number(e.target.value))}
+        onPointerMove={onScrubHover}
+        onPointerLeave={() => setHoverTime(null)}
+        onPointerCancel={() => setHoverTime(null)}
       />
 
-      <span className="time">
-        {formatDuration(cursorTime - log.startTime)} / {formatDuration(span)}
+      <span
+        className={previewing ? 'time preview' : 'time'}
+        title={previewing ? 'Previewing the hovered instant — release to return to the playhead' : undefined}
+      >
+        {formatDuration(displayTime - log.startTime)} / {formatDuration(span)}
       </span>
 
       <label>
