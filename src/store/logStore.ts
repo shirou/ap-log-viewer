@@ -104,12 +104,15 @@ function defaultFields(log: LogData): FieldRef[] {
 }
 
 /**
- * The instant every view should render: the hovered preview when the user is
- * pointing at the timeline, otherwise the playhead. Hover is ignored during
- * playback so a pointer merely crossing the scrub can't hijack the live
- * position — which also means pressing Play always escapes a stale preview.
- * Map marker, plot cursor line and the timeline readout all read this, so they
- * can never disagree about what is on screen.
+ * The instant every view should render: the hovered preview while paused,
+ * otherwise the playhead. Map marker, plot cursor line and the timeline readout
+ * all read this, so they can never disagree about what is on screen.
+ *
+ * Hover never applies during playback, so a pointer merely crossing the scrub
+ * cannot hijack the live position. Two things already uphold that — the scrub
+ * records no preview while playing, and setPlaying clears any pending one — so
+ * the guard here is belt-and-braces, keeping the selector correct on its own
+ * terms rather than depending on those callers.
  */
 export const selectDisplayTime = (s: LogState): number =>
   s.playing ? s.cursorTime : s.hoverTime ?? s.cursorTime;
@@ -224,8 +227,13 @@ export const useLogStore = create<LogState>((set, get) => ({
     if (t == null || !log) return set({ hoverTime: t });
     set({ hoverTime: Math.max(log.startTime, Math.min(log.endTime, t)) });
   },
-  setPlaying: (p) => set({ playing: p }),
-  togglePlaying: () => set({ playing: !get().playing }),
+  // Starting playback drops any pending preview. The pointer can still be
+  // resting on the scrub — reaching Play by keyboard fires no pointerleave — and
+  // a preview left behind would snap every view back to a stale instant the
+  // moment playback pauses. togglePlaying routes through here so the rule has
+  // one home.
+  setPlaying: (p) => set(p ? { playing: true, hoverTime: null } : { playing: false }),
+  togglePlaying: () => get().setPlaying(!get().playing),
   setSpeed: (s) => set({ speed: s }),
   setStepMode: (m) => set({ stepMode: m }),
   setStepIntervalSec: (s) => set({ stepIntervalSec: s }),

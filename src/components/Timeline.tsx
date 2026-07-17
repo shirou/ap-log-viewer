@@ -87,6 +87,7 @@ export default function Timeline() {
 
   // Hovering the scrub previews that instant across the views without seeking.
   const onScrubHover = (e: React.PointerEvent<HTMLInputElement>) => {
+    if (playing) return; // a preview here would be ignored; don't record one
     if (e.pointerType !== 'mouse') return; // touch/pen: dragging already seeks
     const el = e.currentTarget;
     thumbRef.current ??= readThumbPx(el);
