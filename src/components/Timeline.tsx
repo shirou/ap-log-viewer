@@ -89,6 +89,11 @@ export default function Timeline() {
   // Pressing anywhere on the scrub seeks there and starts a drag. Capturing the
   // pointer keeps the drag tracking even when it wanders off the control.
   const onScrubDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    // Only the primary button seeks. A right-click opening the context menu (or
+    // a middle-click starting autoscroll) would otherwise jump the playhead —
+    // the range input this replaced ignored those for us. Touch and pen report
+    // their primary contact as button 0 too.
+    if (e.button !== 0) return;
     const t = timeAtX(e.clientX);
     if (t == null) return;
     seekingRef.current = true;
