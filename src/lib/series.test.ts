@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { rangeValueAtX } from './series.ts';
+import { formatDuration, rangeValueAtX } from './series.ts';
 
 // The rect is the track element itself, so the value spans it edge to edge.
 const RECT = { left: 100, width: 600 };
@@ -39,5 +39,27 @@ describe('rangeValueAtX', () => {
 
   it('leaves the value unsnapped when step is not positive', () => {
     expect(at(400, 0)).toBe(500);
+  });
+});
+
+describe('formatDuration', () => {
+  const at = (sec: number) => formatDuration(sec * 1e6);
+
+  it('formats minutes and tenths of a second', () => {
+    expect(at(0)).toBe('0:00.0');
+    expect(at(65.04)).toBe('1:05.0');
+    expect(at(3599.94)).toBe('59:59.9');
+  });
+
+  // Regression: rounding the seconds after splitting let them reach 60 without
+  // carrying, so the readout flashed "0:60.0" at every minute boundary.
+  it('carries into the minute instead of showing 60 seconds', () => {
+    expect(at(59.98)).toBe('1:00.0');
+    expect(at(119.97)).toBe('2:00.0');
+    expect(at(3599.98)).toBe('60:00.0');
+  });
+
+  it('clamps a negative duration to zero', () => {
+    expect(at(-5)).toBe('0:00.0');
   });
 });

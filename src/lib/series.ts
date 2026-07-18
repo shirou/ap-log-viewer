@@ -69,8 +69,10 @@ export function rangeValueAtX(
 }
 
 export function formatDuration(microFromStart: number): string {
-  const totalSec = Math.max(0, microFromStart) / 1e6;
-  const m = Math.floor(totalSec / 60);
-  const s = totalSec - m * 60;
-  return `${m}:${s.toFixed(1).padStart(4, '0')}`;
+  // Round to the displayed precision *before* splitting into minutes and
+  // seconds. Splitting first lets the seconds round up to 60 without carrying,
+  // so every minute boundary flashed "0:60.0" instead of "1:00.0".
+  const tenths = Math.round(Math.max(0, microFromStart) / 1e5);
+  const m = Math.floor(tenths / 600);
+  return `${m}:${((tenths - m * 600) / 10).toFixed(1).padStart(4, '0')}`;
 }
