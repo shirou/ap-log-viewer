@@ -101,6 +101,7 @@ export default function PlotPanel() {
   const toggleField = useLogStore((s) => s.toggleField);
   const displayTime = useLogStore(selectDisplayTime);
   const setCursorTime = useLogStore((s) => s.setCursorTime);
+  const setHoverTime = useLogStore((s) => s.setHoverTime);
   const theme = useLogStore((s) => s.theme);
   const palette = PALETTES[theme];
 
@@ -185,6 +186,19 @@ export default function PlotPanel() {
         // the timer, so it only surfaces once the pointer has settled.
         setCursor: [
           (u) => {
+            // Preview the hovered instant across the other views. uPlot parks
+            // the cursor at a negative offset when the pointer is away, which
+            // is also how a redraw reports "not hovering" — either way there is
+            // nothing to preview. Read `playing` live rather than closing over
+            // it, so play/pause doesn't force the plot to be rebuilt.
+            const left = u.cursor.left ?? -1;
+            if (left < 0 || useLogStore.getState().playing) {
+              setHoverTime(null);
+            } else {
+              const sec = u.posToVal(left, 'x');
+              if (Number.isFinite(sec)) setHoverTime(log.startTime + sec * 1e6);
+            }
+
             hideTip();
             if (u.cursor.idx == null) return;
             tipTimer = window.setTimeout(() => {
@@ -220,6 +234,9 @@ export default function PlotPanel() {
               const sec = u.posToVal(left, 'x');
               if (Number.isFinite(sec)) setCursorTime(log.startTime + sec * 1e6);
             });
+            // setCursor already clears the preview when the pointer parks off
+            // the plot, but not if the pointer leaves without a final move.
+            u.over.addEventListener('mouseleave', () => setHoverTime(null));
           },
         ],
       },
@@ -237,8 +254,11 @@ export default function PlotPanel() {
       ro.disconnect();
       u.destroy();
       plotRef.current = null;
+      // Don't strand a preview if the plot goes away mid-hover (fields cleared,
+      // theme switched); every view would keep showing that instant.
+      setHoverTime(null);
     };
-  }, [built, log, setCursorTime, palette]);
+  }, [built, log, setCursorTime, setHoverTime, palette]);
 
   // Move the cursor line when the shared timeline changes (including to a
   // hovered preview, so the line never contradicts the map marker).
