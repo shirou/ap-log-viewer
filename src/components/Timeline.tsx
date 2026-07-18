@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { selectDisplayTime, useLogStore } from '../store/logStore.ts';
+import { selectDisplayTime, selectPreviewTime, useLogStore } from '../store/logStore.ts';
 import { formatDuration, rangeValueAtX } from '../lib/series.ts';
 
 const SPEEDS = [0.25, 0.5, 1, 2, 4, 8];
@@ -12,7 +12,7 @@ export default function Timeline() {
   const cursorTime = useLogStore((s) => s.cursorTime);
   const displayTime = useLogStore(selectDisplayTime);
   const setCursorTime = useLogStore((s) => s.setCursorTime);
-  const hoverTime = useLogStore((s) => s.hoverTime);
+  const previewTime = useLogStore(selectPreviewTime);
   const setHoverTime = useLogStore((s) => s.setHoverTime);
   const playing = useLogStore((s) => s.playing);
   const togglePlaying = useLogStore((s) => s.togglePlaying);
@@ -78,9 +78,7 @@ export default function Timeline() {
   if (!log) return null;
   const span = Math.max(1, log.endTime - log.startTime);
   const step = span / 1000;
-  // Hover only previews while paused (see selectDisplayTime), so the readout
-  // must not advertise a preview that nothing is showing.
-  const previewing = !playing && hoverTime != null;
+  const previewing = previewTime != null;
 
   const timeAtX = (clientX: number): number | null => {
     const track = trackRef.current;
@@ -121,11 +119,12 @@ export default function Timeline() {
   // behind by a pointer resting on the scrub, which would otherwise keep every
   // view showing the old instant and make the keypress look ignored.
   const onScrubKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    const by = (d: number) => {
+    const seekTo = (t: number) => {
       e.preventDefault();
       setHoverTime(null);
-      setCursorTime(cursorTime + d);
+      setCursorTime(t); // clamped by the store
     };
+    const by = (d: number) => seekTo(cursorTime + d);
     switch (e.key) {
       case 'ArrowRight':
       case 'ArrowUp':
@@ -138,19 +137,22 @@ export default function Timeline() {
       case 'PageDown':
         return by(-step * PAGE_STEPS);
       case 'Home':
-        return by(-Infinity);
+        return seekTo(log.startTime);
       case 'End':
-        return by(Infinity);
+        return seekTo(log.endTime);
     }
   };
 
   const pct = ((cursorTime - log.startTime) / span) * 100;
   // Where the preview sits, so the scrub itself shows what is being previewed.
-  const previewPct = previewing ? ((hoverTime! - log.startTime) / span) * 100 : null;
+  const previewPct = previewTime == null ? null : ((previewTime - log.startTime) / span) * 100;
 
   return (
     <div className="timeline">
-      <button className="primary" onClick={togglePlaying} style={{ minWidth: 64 }}>
+      {/* Wide enough for "⏸ Pause", the longer label: at 64px the button grew on
+          play and shoved the scrub 12px sideways, moving the thumb under a
+          resting pointer. */}
+      <button className="primary" onClick={togglePlaying} style={{ minWidth: 84 }}>
         {playing ? '⏸ Pause' : '▶ Play'}
       </button>
 
@@ -175,6 +177,12 @@ export default function Timeline() {
         }}
         onPointerLeave={() => {
           if (!seekingRef.current) setHoverTime(null);
+        }}
+        // Capture is released for reasons beyond our pointerup — the element
+        // going away, the browser cancelling it. Without this the seek flag
+        // could stick and silently kill hovering for the rest of the session.
+        onLostPointerCapture={() => {
+          seekingRef.current = false;
         }}
         onKeyDown={onScrubKey}
       >

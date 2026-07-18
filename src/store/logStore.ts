@@ -104,18 +104,22 @@ function defaultFields(log: LogData): FieldRef[] {
 }
 
 /**
- * The instant every view should render: the hovered preview while paused,
- * otherwise the playhead. Map marker, plot cursor line and the timeline readout
- * all read this, so they can never disagree about what is on screen.
+ * The instant being previewed, or null when the playhead is what's live.
  *
  * Hover never applies during playback, so a pointer merely crossing the scrub
  * cannot hijack the live position. Two things already uphold that — the scrub
  * records no preview while playing, and setPlaying clears any pending one — so
- * the guard here is belt-and-braces, keeping the selector correct on its own
- * terms rather than depending on those callers.
+ * the guard here is belt-and-braces, keeping the rule correct on its own terms
+ * rather than depending on those callers.
  */
-export const selectDisplayTime = (s: LogState): number =>
-  s.playing ? s.cursorTime : s.hoverTime ?? s.cursorTime;
+export const selectPreviewTime = (s: LogState): number | null => (s.playing ? null : s.hoverTime);
+
+/**
+ * The instant every view should render: the preview when there is one,
+ * otherwise the playhead. Map marker, plot cursor line and the timeline readout
+ * all read this, so they can never disagree about what is on screen.
+ */
+export const selectDisplayTime = (s: LogState): number => selectPreviewTime(s) ?? s.cursorTime;
 
 export const useLogStore = create<LogState>((set, get) => ({
   status: 'idle',

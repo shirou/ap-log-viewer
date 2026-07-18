@@ -403,11 +403,17 @@ input[type="text"] {
   /* Own touch drags rather than letting the page scroll steal them. */
   touch-action: none;
 }
+/* The rect Timeline measures must be the same box the thumb is positioned in,
+   or the two drift apart at the ends. A border would break that: percentage
+   offsets resolve against the padding box while getBoundingClientRect reports
+   the border box. An inset outline draws the same 1px edge, on top of the
+   fill, without contributing to either box. */
 .timeline .scrub-track {
   position: relative;
   flex: 1;
   height: var(--scrub-track);
-  border: 1px solid var(--border);
+  outline: 1px solid var(--border);
+  outline-offset: -1px;
   border-radius: 3px;
   background: var(--panel-2);
 }
