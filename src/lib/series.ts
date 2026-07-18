@@ -40,11 +40,15 @@ export function positionAt(
 }
 
 /**
- * Value of a horizontal `<input type="range">` at pointer x, mirroring the
- * native mapping so a hover preview and a click at the same x agree exactly:
- * the thumb's centre travels inset by half a thumb at each end, and the value
- * snaps to `step`. `thumbPx` must be the rendered thumb width — the caller
- * reads it from CSS rather than assuming a browser default.
+ * Value at pointer x along a track, snapped to `step` and clamped to the ends.
+ *
+ * `rect` must be the measured rect of the track element itself, so the mapping
+ * needs no knowledge of how the control is drawn. Hovering, clicking and
+ * dragging all call this with the same rect, which is what makes a preview and
+ * the seek it turns into agree exactly rather than approximately. (A native
+ * `<input type="range">` cannot offer that: its pixel-to-value mapping depends
+ * on the rendered thumb width, which is not measurable from script —
+ * getComputedStyle on ::-webkit-slider-thumb reports the input's own width.)
  */
 export function rangeValueAtX(
   x: number,
@@ -52,10 +56,8 @@ export function rangeValueAtX(
   min: number,
   max: number,
   step: number,
-  thumbPx: number,
 ): number {
-  const track = Math.max(1, rect.width - thumbPx);
-  const ratio = Math.min(1, Math.max(0, (x - rect.left - thumbPx / 2) / track));
+  const ratio = Math.min(1, Math.max(0, (x - rect.left) / Math.max(1, rect.width)));
   const raw = min + ratio * (max - min);
   if (!(step > 0)) return raw;
   let v = min + Math.round((raw - min) / step) * step;
