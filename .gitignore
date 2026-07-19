@@ -6,6 +6,9 @@ internal/web/dist
 *.local
 *.tsbuildinfo
 
+# Cloudflare (local wrangler dev state)
+.wrangler
+
 # Go
 /server
 /cmd/server/server
