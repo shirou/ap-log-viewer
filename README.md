@@ -14,6 +14,31 @@ There are two ways to run it, and they serve the same build:
   [Releases](https://github.com/shirou/ap-log-viewer/releases) and run it offline.
   No Node, no assets, no network.
 
+## Mission waypoints
+
+The planned mission is drawn on the map as a layer you can switch off, taken
+from the log itself:
+
+- `.bin` — the `CMD` messages, which hold the whole uploaded mission.
+- `.tlog` — `MISSION_ITEM_INT` (or the deprecated `MISSION_ITEM`).
+
+**A tlog only contains the mission if a transfer happened while it was being
+recorded** — the GCS downloading it on connect, or an upload. Flying a mission
+is not enough; if that exchange was not captured, the plan is simply not in the
+file, and the Layers panel says so rather than hiding the control.
+
+For those logs, load the plan separately with **Load plan file…** in the Layers
+panel. Both flight-plan formats are accepted, identified by content rather than
+by file extension:
+
+- **QGC WPL** text (`.waypoints`, `.txt`) — Mission Planner, MAVProxy
+- **QGC `.plan`** JSON — QGroundControl
+
+A loaded plan overrides the one in the log and the map moves to it. QGC survey
+and corridor-scan items store their generated waypoints, so they are drawn in
+full; structure scans store only the parameters they are regenerated from, so
+those are reported as not shown rather than silently dropped.
+
 ## Stack
 
 - Frontend: React + Vite + TypeScript
@@ -26,7 +51,8 @@ There are two ways to run it, and they serve the same build:
 ## Directory layout
 
 ```
-src/parsers/      Log parsers (source / dataflash / tlog / worker)
+src/parsers/      Log parsers (source / dataflash / tlog / worker) + mission extraction
+                  (mission.ts) and standalone plan files (missionFile.ts)
 src/components/   UI (Map / Plot / Timeline / FieldTree / ...)
 src/store/        zustand store
 cmd/server/       Go static file server

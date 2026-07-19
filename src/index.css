@@ -674,6 +674,40 @@ input[type="text"] {
   gap: 6px;
   color: var(--text);
 }
+/* A layer the current log cannot offer: still listed, so its absence reads as
+   a fact about the log rather than a missing feature. */
+.map-controls label.disabled,
+.map-controls label.disabled .count {
+  color: var(--muted);
+  cursor: default;
+}
+/* Explanatory notes wrap instead of stretching the panel across the map. */
+.map-controls .plot-hint {
+  max-width: 230px;
+  white-space: normal;
+}
+.mission-file {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+  width: 100%;
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
+/* A long plan name truncates rather than widening the panel over the map. */
+.mission-file-name {
+  max-width: 230px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent);
+}
+.mission-file-error {
+  max-width: 230px;
+  color: var(--accent-2);
+  font-size: 11px;
+}
 .measure-readout {
   border-top: 1px solid var(--border);
   padding-top: 6px;

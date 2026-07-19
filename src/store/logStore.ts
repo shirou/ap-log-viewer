@@ -1,6 +1,7 @@
 import { create } from 'zustand';
-import type { FieldRef, LogData, ParseMessage } from '../model/log.ts';
+import type { FieldRef, LogData, ParseMessage, Waypoint } from '../model/log.ts';
 import { fieldKey } from '../model/log.ts';
+import { parseMissionFile } from '../parsers/missionFile.ts';
 import type { AxisSide } from '../lib/axisGroups.ts';
 
 /**
@@ -55,6 +56,14 @@ export interface LogState {
   /** Increments on each loaded log; used as a stable remount key for the map. */
   loadId: number;
 
+  /**
+   * A flight plan loaded from a separate file, which takes precedence over any
+   * the log carries. Most logs carry none — a tlog only does when a mission
+   * transfer happened to be recorded — so this is often the only way to see one.
+   */
+  missionFile: { name: string; waypoints: Waypoint[]; unreadable: number } | null;
+  missionFileError: string | null;
+
   // UI theme (persisted). Drives the CSS custom properties and plot colors.
   theme: Theme;
 
@@ -78,6 +87,9 @@ export interface LogState {
   setTheme: (t: Theme) => void;
   toggleTheme: () => void;
   parseFile: (file: File) => void;
+  /** Load a .waypoints/.txt (QGC WPL) or .plan (QGC JSON) flight plan. */
+  loadMissionFile: (file: File) => Promise<void>;
+  clearMissionFile: () => void;
   reset: () => void;
   /** Drop one message type from memory (frees its columns; map trajectory is kept). */
   purgeMessage: (name: string) => void;
@@ -159,6 +171,8 @@ export const useLogStore = create<LogState>((set, get) => ({
   fileName: null,
   log: null,
   loadId: 0,
+  missionFile: null,
+  missionFileError: null,
   theme: initialTheme(),
   selectedFields: [],
   axisOverride: {},
@@ -184,7 +198,10 @@ export const useLogStore = create<LogState>((set, get) => ({
     // Cancel any in-flight parse so a slow earlier worker can't post a stale
     // result that overwrites this one.
     activeWorker?.terminate();
-    set({ status: 'parsing', progress: 0, error: null, fileName: file.name, log: null, playing: false, hoverTime: null, axisOverride: {} });
+    // The plan is dropped along with the log it was loaded against. Carrying it
+    // over would silently draw one flight's mission across a different flight,
+    // which reads as fact rather than as leftover state.
+    set({ status: 'parsing', progress: 0, error: null, fileName: file.name, log: null, playing: false, hoverTime: null, axisOverride: {}, missionFile: null, missionFileError: null });
 
     const worker = new Worker(new URL('../parsers/parser.worker.ts', import.meta.url), { type: 'module' });
     activeWorker = worker;
@@ -220,10 +237,28 @@ export const useLogStore = create<LogState>((set, get) => ({
     worker.postMessage({ file });
   },
 
+  // Plan files are small text/JSON, so unlike a log they are read here rather
+  // than handed to the parse worker.
+  // A rejected file reports why but leaves any plan already loaded in place:
+  // picking the wrong file by mistake should not also throw away the right one.
+  loadMissionFile: async (file) => {
+    try {
+      const parsed = parseMissionFile(await file.text());
+      if (parsed.waypoints.length === 0) {
+        return set({ missionFileError: 'No drawable waypoints in that file' });
+      }
+      set({ missionFile: { name: file.name, ...parsed }, missionFileError: null });
+    } catch (err) {
+      set({ missionFileError: err instanceof Error ? err.message : String(err) });
+    }
+  },
+
+  clearMissionFile: () => set({ missionFile: null, missionFileError: null }),
+
   reset: () => {
     activeWorker?.terminate();
     activeWorker = null;
-    set({ status: 'idle', progress: 0, error: null, fileName: null, log: null, selectedFields: [], axisOverride: {}, cursorTime: 0, hoverTime: null, playing: false });
+    set({ status: 'idle', progress: 0, error: null, fileName: null, log: null, selectedFields: [], axisOverride: {}, cursorTime: 0, hoverTime: null, playing: false, missionFile: null, missionFileError: null });
   },
 
   purgeMessage: (name) => {
