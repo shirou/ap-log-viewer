@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { FieldRef, LogData, ParseMessage } from '../model/log.ts';
 import { fieldKey } from '../model/log.ts';
+import type { AxisSide } from '../lib/axisGroups.ts';
 
 export type Status = 'idle' | 'parsing' | 'ready' | 'error';
 
@@ -51,6 +52,8 @@ export interface LogState {
 
   // Plot selection.
   selectedFields: FieldRef[];
+  /** Fields pinned to a y axis by hand, keyed by fieldKey. Absent = automatic. */
+  axisOverride: Record<string, AxisSide>;
 
   // Timeline / playback (cursorTime is the single source of truth, microseconds).
   cursorTime: number;
@@ -73,6 +76,8 @@ export interface LogState {
   /** Drop every message type that has no plotted field. */
   purgeUnselected: () => void;
   toggleField: (ref: FieldRef) => void;
+  /** Pin a plotted field to a y axis, or pass null to hand it back to the automatic split. */
+  setAxisOverride: (key: string, side: AxisSide | null) => void;
   setCursorTime: (t: number) => void;
   setHoverTime: (t: number | null) => void;
   setPlaying: (p: boolean) => void;
@@ -104,6 +109,24 @@ function defaultFields(log: LogData): FieldRef[] {
 }
 
 /**
+ * Drop axis pins for fields that are no longer plotted.
+ *
+ * Without this a pin outlives the series it belongs to and springs back the
+ * next time that field is selected, long after the user has forgotten setting
+ * it. Every path that removes a field routes through here — note that
+ * purgeMessage drops fields without going near toggleField.
+ */
+function pruneOverrides(overrides: Record<string, AxisSide>, fields: FieldRef[]): Record<string, AxisSide> {
+  const keys = Object.keys(overrides);
+  if (keys.length === 0) return overrides;
+  const keep = new Set(fields.map(fieldKey));
+  if (keys.every((k) => keep.has(k))) return overrides;
+  const out: Record<string, AxisSide> = {};
+  for (const k of keys) if (keep.has(k)) out[k] = overrides[k];
+  return out;
+}
+
+/**
  * The instant being previewed, or null when the playhead is what's live.
  *
  * Hover never applies during playback, so a pointer merely crossing the scrub
@@ -130,6 +153,7 @@ export const useLogStore = create<LogState>((set, get) => ({
   loadId: 0,
   theme: initialTheme(),
   selectedFields: [],
+  axisOverride: {},
   cursorTime: 0,
   hoverTime: null,
   playing: false,
@@ -152,7 +176,7 @@ export const useLogStore = create<LogState>((set, get) => ({
     // Cancel any in-flight parse so a slow earlier worker can't post a stale
     // result that overwrites this one.
     activeWorker?.terminate();
-    set({ status: 'parsing', progress: 0, error: null, fileName: file.name, log: null, playing: false, hoverTime: null });
+    set({ status: 'parsing', progress: 0, error: null, fileName: file.name, log: null, playing: false, hoverTime: null, axisOverride: {} });
 
     const worker = new Worker(new URL('../parsers/parser.worker.ts', import.meta.url), { type: 'module' });
     activeWorker = worker;
@@ -191,17 +215,18 @@ export const useLogStore = create<LogState>((set, get) => ({
   reset: () => {
     activeWorker?.terminate();
     activeWorker = null;
-    set({ status: 'idle', progress: 0, error: null, fileName: null, log: null, selectedFields: [], cursorTime: 0, hoverTime: null, playing: false });
+    set({ status: 'idle', progress: 0, error: null, fileName: null, log: null, selectedFields: [], axisOverride: {}, cursorTime: 0, hoverTime: null, playing: false });
   },
 
   purgeMessage: (name) => {
-    const { log, selectedFields } = get();
+    const { log, selectedFields, axisOverride } = get();
     if (!log || !log.messages[name]) return;
     const messages = { ...log.messages };
     delete messages[name];
+    const kept = selectedFields.filter((r) => r.message !== name);
     // New `log` ref re-renders consumers; `trajectory` ref is unchanged so the
     // map does not rebuild and `loadId` stays put so the camera is preserved.
-    set({ log: { ...log, messages }, selectedFields: selectedFields.filter((r) => r.message !== name) });
+    set({ log: { ...log, messages }, selectedFields: kept, axisOverride: pruneOverrides(axisOverride, kept) });
   },
 
   purgeUnselected: () => {
@@ -215,9 +240,22 @@ export const useLogStore = create<LogState>((set, get) => ({
 
   toggleField: (ref) => {
     const key = fieldKey(ref);
-    const cur = get().selectedFields;
+    const { selectedFields: cur, axisOverride } = get();
     const exists = cur.some((r) => fieldKey(r) === key);
-    set({ selectedFields: exists ? cur.filter((r) => fieldKey(r) !== key) : [...cur, ref] });
+    const next = exists ? cur.filter((r) => fieldKey(r) !== key) : [...cur, ref];
+    set({ selectedFields: next, axisOverride: pruneOverrides(axisOverride, next) });
+  },
+
+  setAxisOverride: (key, side) => {
+    const cur = get().axisOverride;
+    if (side == null) {
+      if (!(key in cur)) return;
+      const next = { ...cur };
+      delete next[key];
+      return set({ axisOverride: next });
+    }
+    if (cur[key] === side) return;
+    set({ axisOverride: { ...cur, [key]: side } });
   },
 
   setCursorTime: (t) => {
