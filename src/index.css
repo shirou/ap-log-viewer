@@ -703,6 +703,10 @@ input[type="text"] {
   white-space: nowrap;
   color: var(--accent);
 }
+.mission-file-actions {
+  display: flex;
+  gap: 6px;
+}
 .mission-file-error {
   max-width: 230px;
   color: var(--accent-2);

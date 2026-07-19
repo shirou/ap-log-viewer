@@ -50,6 +50,17 @@ const PATH_VERTEX_COMMANDS = new Set([
 ]);
 
 /**
+ * Whether a command is one this module would draw, given a usable position.
+ *
+ * Exposed so a caller can tell the two reasons an item gets dropped apart: a
+ * command that is not a route vertex is an expected, silent omission, while one
+ * that is but whose coordinates could not be read is a gap worth reporting.
+ */
+export function isPathVertex(command: number): boolean {
+  return PATH_VERTEX_COMMANDS.has(command);
+}
+
+/**
  * Read a DataFlash lat/lon pair as degrees, undoing 1e7 scaling if it is still
  * applied.
  *

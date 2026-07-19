@@ -28,16 +28,20 @@ is not enough; if that exchange was not captured, the plan is simply not in the
 file, and the Layers panel says so rather than hiding the control.
 
 For those logs, load the plan separately with **Load plan file…** in the Layers
-panel. Both flight-plan formats are accepted, identified by content rather than
-by file extension:
+panel:
 
 - **QGC WPL** text (`.waypoints`, `.txt`) — Mission Planner, MAVProxy
 - **QGC `.plan`** JSON — QGroundControl
 
-A loaded plan overrides the one in the log and the map moves to it. QGC survey
-and corridor-scan items store their generated waypoints, so they are drawn in
-full; structure scans store only the parameters they are regenerated from, so
-those are reported as not shown rather than silently dropped.
+Which of the two it is comes from the content, not the extension — Mission
+Planner writes the text format under either name, so the file picker's filter is
+only a convenience.
+
+A loaded plan overrides the one in the log, and the map moves to it (and back to
+the flight when it is removed). QGC surveys and corridor scans store their
+generated waypoints, so they are drawn in full. Structure scans and landing
+patterns instead store the geometry QGC regenerates them from; those are counted
+and reported on the map panel rather than silently dropped.
 
 ## Stack
 

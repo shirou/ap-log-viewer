@@ -24,8 +24,11 @@ describe('parseMissionFile — QGC WPL text', () => {
   });
 
   it('survives a BOM, CRLF line endings, comments and blank lines', () => {
+    // '\uFEFF' rather than a literal BOM: invisible in source, it is the kind of
+    // character an editor or a copy-paste silently drops, taking the coverage
+    // with it while the test still passes.
     const text =
-      '﻿QGC WPL 110\r\n' +
+      '\uFEFFQGC WPL 110\r\n' +
       '# exported by hand\r\n' +
       row(0, 1, 0, 16, 0, 0, 0, 0, 35.0, 139.0, 0, 1) +
       '\r\n\r\n' +
@@ -34,9 +37,14 @@ describe('parseMissionFile — QGC WPL text', () => {
     const { waypoints } = parseMissionFile(text);
 
     expect(waypoints.map((w) => w.seq)).toEqual([0, 1]);
-    // A \r left glued to the last column would make autocontinue misparse; the
-    // altitude column is the one that would show it here.
+    // The trailing \r is stripped by the per-line trim before splitting, so no
+    // column carries one into Number().
     expect(waypoints[1].alt).toBeCloseTo(50, 6);
+  });
+
+  it('tolerates blank lines before the header', () => {
+    const text = ['', '  ', 'QGC WPL 110', row(0, 1, 0, 16, 0, 0, 0, 0, 35.0, 139.0, 0, 1)].join('\n');
+    expect(parseMissionFile(text).waypoints).toHaveLength(1);
   });
 
   it('accepts the space-separated variant some writers produce', () => {
@@ -45,11 +53,18 @@ describe('parseMissionFile — QGC WPL text', () => {
   });
 
   it('rejects a decimal-comma file instead of misreading its coordinates', () => {
-    // Splitting on whitespace alone would leave "35,0" as one field and
-    // Number() would yield NaN, but a comma-separated writer also shatters the
-    // row into far more fields — which is the signal actually worth failing on.
+    // Mission Planner also splits on commas, so it reads this happily. Here it
+    // collapses to a single whitespace-delimited field, which is what the count
+    // check catches — the row must not be indexed into either way.
     const text = ['QGC WPL 110', '0,1,0,16,0,0,0,0,35,0,139,0,0,1'].join('\n');
     expect(() => parseMissionFile(text)).toThrow(/expected 12 fields/);
+  });
+
+  it('rejects a row with too many fields, not just too few', () => {
+    // The count is checked exactly in both directions: a stray extra column
+    // shifts every position after it, which misreads rather than fails.
+    const text = ['QGC WPL 110', row(0, 1, 0, 16, 0, 0, 0, 0, 35.0, 139.0, 0, 1, 99)].join('\n');
+    expect(() => parseMissionFile(text)).toThrow(/expected 12 fields, found 13/);
   });
 
   it('reads the blank-home row Mission Planner writes as command 0', () => {
@@ -60,6 +75,24 @@ describe('parseMissionFile — QGC WPL text', () => {
     ].join('\n');
     // Treated as a plain waypoint, the way every other reader does.
     expect(parseMissionFile(text).waypoints.map((w) => w.seq)).toEqual([0, 1]);
+  });
+
+  it('keeps every waypoint when an index repeats part-way through the file', () => {
+    // A file is one whole plan, so the log paths' rule — a sequence number back
+    // at 0 means a *new* plan, discard the last — must not be applied to it.
+    // Left on, the rows before the repeat are all thrown away.
+    const text = [
+      'QGC WPL 110',
+      row(0, 1, 0, 16, 0, 0, 0, 0, 35.0, 139.0, 0, 1),
+      row(1, 0, 3, 16, 0, 0, 0, 0, 35.1, 139.0, 50, 1),
+      row(2, 0, 3, 16, 0, 0, 0, 0, 35.2, 139.0, 50, 1),
+      row(0, 0, 3, 16, 0, 0, 0, 0, 35.3, 139.0, 50, 1),
+      row(3, 0, 3, 16, 0, 0, 0, 0, 35.4, 139.0, 50, 1),
+    ].join('\n');
+    const { waypoints } = parseMissionFile(text);
+
+    expect(waypoints.map((w) => w.seq)).toEqual([0, 1, 2, 3]);
+    expect(waypoints[0].lat).toBeCloseTo(35.3, 6); // the repeat overwrites in place
   });
 
   it('drops non-positional commands, as the log path does', () => {
@@ -100,16 +133,46 @@ describe('parseMissionFile — QGC .plan JSON', () => {
   });
 
   it('treats a null coordinate as absent rather than as zero', () => {
-    // Qt serialises NaN as null. Read as 0 it would put a waypoint off West
-    // Africa; the whole point is that it must not be drawn at all.
+    // Qt serialises NaN as null. Only the latitude is null here, deliberately:
+    // with both null, reading them as 0 lands on null island and the collector
+    // drops it anyway, so the test would pass against exactly the bug it names.
+    // With one real value it lands off West Africa instead — visibly plotted.
     const text = plan({
       plannedHomePosition: [35.0, 139.0, 0],
       items: [
-        { type: 'SimpleItem', command: 16, frame: 3, params: [0, 0, 0, null, null, null, 50], doJumpId: 1 },
+        { type: 'SimpleItem', command: 16, frame: 3, params: [0, 0, 0, null, null, 139.5, 50], doJumpId: 1 },
         simple(2, 16, 35.002, 139.002, 50),
       ],
     });
-    expect(parseMissionFile(text).waypoints.map((w) => w.seq)).toEqual([0, 2]);
+    const { waypoints, unreadable } = parseMissionFile(text);
+
+    expect(waypoints.map((w) => w.seq)).toEqual([0, 2]);
+    expect(waypoints.every((w) => w.lon !== 139.5)).toBe(true);
+    // A waypoint that belongs on the route but could not be read is reported,
+    // not silently missing.
+    expect(unreadable).toBe(1);
+  });
+
+  it('numbers items by doJumpId, which is not the array index', () => {
+    // A complex item consumes a range of sequence numbers, so the numbering
+    // skips ahead and later items no longer line up with their array position.
+    const text = plan({
+      plannedHomePosition: [35.0, 139.0, 0],
+      items: [simple(1, 22, 35.001, 139.001, 30), simple(9, 16, 35.002, 139.002, 50)],
+    });
+    expect(parseMissionFile(text).waypoints.map((w) => w.seq)).toEqual([0, 1, 9]);
+  });
+
+  it('ignores a sequence number that would sort ahead of home', () => {
+    // doJumpId comes from a file QGC need not have written. A negative one
+    // would order the route line to start with a leg from nowhere.
+    const text = plan({
+      plannedHomePosition: [35.0, 139.0, 0],
+      items: [simple(-1, 16, 36.0, 140.0, 50), simple(2, 16, 35.002, 139.002, 50)],
+    });
+    const seqs = parseMissionFile(text).waypoints.map((w) => w.seq);
+    expect(seqs.every((s) => s >= 0)).toBe(true);
+    expect(seqs[0]).toBe(0); // home still leads
   });
 
   it('reads the legacy shape that carries a separate coordinate array', () => {
@@ -153,6 +216,66 @@ describe('parseMissionFile — QGC .plan JSON', () => {
     expect(waypoints.map((w) => w.seq)).toEqual([0, 1, 2, 3]);
     expect(waypoints[3].lat).toBeCloseTo(35.011, 6);
     expect(unreadable).toBe(0);
+  });
+
+  it('expands a survey saved under the older top-level type', () => {
+    // At survey version 2 the discriminator was the item's own name rather than
+    // "ComplexItem". Falling through to the simple-item branch would find no
+    // coordinates and lose the entire survey without a word.
+    const text = plan({
+      plannedHomePosition: [35.0, 139.0, 0],
+      items: [
+        {
+          type: 'survey',
+          version: 2,
+          TransectStyleComplexItem: {
+            Items: [simple(1, 16, 35.010, 139.010, 40), simple(2, 16, 35.011, 139.011, 40)],
+          },
+        },
+      ],
+    });
+    const { waypoints, unreadable } = parseMissionFile(text);
+
+    expect(waypoints.map((w) => w.seq)).toEqual([0, 1, 2]);
+    expect(unreadable).toBe(0);
+  });
+
+  it('counts a landing pattern, which is a complex item with no stored waypoints', () => {
+    // Not a structure scan, so the count must not be described as one — QGC
+    // writes five complex types and three of them store geometry, not items.
+    const text = plan({
+      plannedHomePosition: [35.0, 139.0, 0],
+      items: [
+        simple(1, 16, 35.001, 139.001, 30),
+        {
+          type: 'ComplexItem',
+          complexItemType: 'fwLandingPattern',
+          version: 2,
+          landCoordinate: [35.02, 139.02, 0],
+          landingApproachCoordinate: [35.03, 139.03, 15],
+        },
+      ],
+    });
+    const { waypoints, unreadable } = parseMissionFile(text);
+
+    expect(waypoints.map((w) => w.seq)).toEqual([0, 1]);
+    expect(unreadable).toBe(1);
+  });
+
+  it('counts a transect item that stores an empty waypoint list', () => {
+    const text = plan({
+      plannedHomePosition: [35.0, 139.0, 0],
+      items: [
+        simple(1, 16, 35.001, 139.001, 30),
+        { type: 'ComplexItem', complexItemType: 'survey', TransectStyleComplexItem: { Items: [] } },
+      ],
+    });
+    expect(parseMissionFile(text).unreadable).toBe(1);
+  });
+
+  it('rejects a plan that is nothing but a home position', () => {
+    const text = plan({ plannedHomePosition: [35.0, 139.0, 0], items: [] });
+    expect(() => parseMissionFile(text)).toThrow(/no waypoints/i);
   });
 
   it('counts a structure scan as unreadable rather than silently skipping it', () => {

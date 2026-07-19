@@ -9,14 +9,33 @@
 //   * QGC .plan — QGroundControl's JSON format
 
 import type { Waypoint } from '../model/log.ts';
-import { MissionCollector } from './mission.ts';
+import { MissionCollector, isPathVertex } from './mission.ts';
+
+/**
+ * A collector for file input, sharing the log paths' command allow-list and
+ * coordinate filters so a plan is judged the same however it arrived.
+ *
+ * beginTransfer() up front is what makes it safe to reuse: a file is one whole
+ * plan, so the guess the log paths need — a sequence number restarting at 0
+ * means a *new* plan, discard the last one — must not run here. Left on, a file
+ * that repeats an index part-way through loses every waypoint before it.
+ */
+function fileCollector(): MissionCollector {
+  const into = new MissionCollector();
+  into.beginTransfer();
+  return into;
+}
 
 export interface MissionFile {
   waypoints: Waypoint[];
   /**
-   * Items that are part of the plan but whose waypoints the file does not
-   * contain, so they cannot be drawn. Surfaced rather than dropped quietly:
-   * the map would otherwise be missing a chunk of the plan with no hint why.
+   * Items that belong on the route but could not be drawn — because the file
+   * stores only the parameters they are regenerated from (structure scans and
+   * landing patterns), or because their coordinates were unreadable.
+   *
+   * Counted rather than dropped quietly. A plan missing a chunk of itself, with
+   * nothing on screen saying so, is worse than one that failed to load: it
+   * looks like it worked.
    */
   unreadable: number;
 }
@@ -26,12 +45,15 @@ const FRAME_GLOBAL = 0;
 const NAV_WAYPOINT = 16;
 
 export function parseMissionFile(text: string): MissionFile {
-  // A UTF-8 BOM survives File.text() and would defeat both the header match
-  // and JSON.parse.
-  const body = text.replace(/^﻿/, '');
-  const head = body.trimStart();
+  // trimStart carries the UTF-8 BOM with it — U+FEFF is whitespace as far as
+  // ECMAScript is concerned — and a BOM survives File.text(), where it would
+  // otherwise defeat both the header match and JSON.parse. Both readers get the
+  // trimmed text, so the header really is line 0 of what parseWpl sees: passing
+  // the raw text would let a blank first line shift every row by one and report
+  // the header itself as a malformed record.
+  const head = text.trimStart();
   if (head.startsWith('{')) return parsePlan(head);
-  if (head.startsWith('QGC WPL')) return parseWpl(body);
+  if (head.startsWith('QGC WPL')) return parseWpl(head);
   throw new Error('Not a mission file (expected a "QGC WPL" header or QGC .plan JSON)');
 }
 
@@ -47,7 +69,7 @@ export function parseMissionFile(text: string): MissionFile {
  */
 function parseWpl(text: string): MissionFile {
   const lines = text.split(/\r?\n/);
-  const into = new MissionCollector();
+  const into = fileCollector();
   let seen = 0;
 
   for (let i = 1; i < lines.length; i++) {
@@ -85,6 +107,10 @@ function jsonNumber(v: unknown): number {
   return typeof v === 'number' ? v : NaN;
 }
 
+function finiteOr(v: number, fallback: number): number {
+  return Number.isFinite(v) ? v : fallback;
+}
+
 /**
  * QGroundControl .plan.
  *
@@ -100,7 +126,7 @@ function parsePlan(text: string): MissionFile {
   const mission = root.mission as { plannedHomePosition?: unknown; items?: unknown } | undefined;
   if (!mission) throw new Error('.plan file has no mission');
 
-  const into = new MissionCollector();
+  const into = fileCollector();
   const home = mission.plannedHomePosition;
   if (Array.isArray(home) && home.length >= 2) {
     into.add({
@@ -108,15 +134,18 @@ function parsePlan(text: string): MissionFile {
       command: NAV_WAYPOINT,
       lat: jsonNumber(home[0]),
       lon: jsonNumber(home[1]),
-      alt: jsonNumber(home[2]) || 0,
+      alt: finiteOr(jsonNumber(home[2]), 0),
       frame: FRAME_GLOBAL,
     });
   }
 
   const items = Array.isArray(mission.items) ? mission.items : [];
+  // Home alone is not a plan — it would draw as a single "0" chip sitting on
+  // the launch point, which reads as a mission of one waypoint rather than as
+  // the empty mission it is.
+  if (items.length === 0) throw new Error('No waypoints in this file');
   const ctx = { unreadable: 0, nextSeq: 1 };
   for (const item of items) collectPlanItem(item, into, ctx);
-  if (!Array.isArray(home) && items.length === 0) throw new Error('No waypoints in this file');
 
   return { waypoints: into.finalize(), unreadable: ctx.unreadable };
 }
@@ -129,12 +158,14 @@ function collectPlanItem(
   if (!item || typeof item !== 'object') return;
   const o = item as Record<string, unknown>;
 
-  if (o.type === 'ComplexItem') {
-    // Surveys and corridor scans store their generated waypoints in the file,
-    // so they can be read back exactly. Structure scans store only the
-    // parameters QGC regenerates them from, and are genuinely unreadable here.
+  // `type` is "ComplexItem" today, but a survey saved at version 2 put its own
+  // name there instead, and QGC still converts those on load.
+  if (o.type === 'ComplexItem' || o.type === 'survey') {
+    // Surveys and corridor scans store their generated waypoints in the file
+    // and are recovered exactly. Structure scans and landing patterns store
+    // only the geometry QGC regenerates them from, so they cannot be.
     const inner = o.TransectStyleComplexItem as { Items?: unknown } | undefined;
-    if (Array.isArray(inner?.Items)) {
+    if (Array.isArray(inner?.Items) && inner.Items.length > 0) {
       for (const sub of inner.Items) collectPlanItem(sub, into, ctx);
       return;
     }
@@ -142,24 +173,31 @@ function collectPlanItem(
     return;
   }
 
-  // Older files use a separate `coordinate` and carry only param1..4, so the
-  // position is not always at params[4..6].
+  // Older files put the position in a separate `coordinate` rather than in
+  // params[4..6]; V1 also spells its params as param1..param4 keys, but those
+  // are never a position, so `coordinate` is the only extra place to look.
   const params = Array.isArray(o.params) ? o.params : [];
   const coord = Array.isArray(o.coordinate) ? o.coordinate : null;
   const lat = coord ? jsonNumber(coord[0]) : jsonNumber(params[4]);
   const lon = coord ? jsonNumber(coord[1]) : jsonNumber(params[5]);
   const alt = coord ? jsonNumber(coord[2]) : jsonNumber(params[6]);
+  const command = jsonNumber(o.command);
 
+  // doJumpId is the real sequence number, but it comes from a file that may not
+  // have been written by QGC. A negative or fractional one would sort ahead of
+  // home or collide on the way into the map, so anything unusable falls back to
+  // counting, which is also what genuine V1 files need — they spell it `id`.
   const doJumpId = jsonNumber(o.doJumpId);
-  const seq = Number.isFinite(doJumpId) ? doJumpId : ctx.nextSeq;
+  const seq = Number.isInteger(doJumpId) && doJumpId >= 0 ? doJumpId : ctx.nextSeq;
   ctx.nextSeq = seq + 1;
 
-  into.add({
-    seq,
-    command: jsonNumber(o.command),
-    lat,
-    lon,
-    alt,
-    frame: jsonNumber(o.frame),
-  });
+  // Report a route vertex whose position could not be read. Commands that are
+  // not vertices at all (DO_JUMP and friends) are expected omissions and stay
+  // silent; this is the case where part of the plan really is missing.
+  if (isPathVertex(command) && !(Number.isFinite(lat) && Number.isFinite(lon))) {
+    ctx.unreadable++;
+    return;
+  }
+
+  into.add({ seq, command, lat, lon, alt, frame: jsonNumber(o.frame) });
 }
