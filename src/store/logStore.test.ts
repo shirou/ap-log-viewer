@@ -61,3 +61,57 @@ describe('setPlaying', () => {
     expect(selectDisplayTime(useLogStore.getState())).toBe(10);
   });
 });
+
+describe('axisOverride', () => {
+  const ROLL = { message: 'ATT', field: 'Roll' };
+  const ALT = { message: 'GPS', field: 'Alt' };
+  const overrides = () => useLogStore.getState().axisOverride;
+
+  beforeEach(() => {
+    useLogStore.setState({ selectedFields: [ROLL, ALT], axisOverride: {} });
+  });
+
+  it('pins a field and hands it back to automatic', () => {
+    const { setAxisOverride } = useLogStore.getState();
+    setAxisOverride('ATT.Roll', 1);
+    expect(overrides()).toEqual({ 'ATT.Roll': 1 });
+    setAxisOverride('ATT.Roll', null);
+    expect(overrides()).toEqual({});
+  });
+
+  it('keeps the same object when nothing changes, so the plot does not rebuild', () => {
+    const { setAxisOverride } = useLogStore.getState();
+    setAxisOverride('ATT.Roll', 1);
+    const before = overrides();
+    setAxisOverride('ATT.Roll', 1);
+    setAxisOverride('GPS.Alt', null); // never pinned
+    expect(overrides()).toBe(before);
+  });
+
+  it('drops the pin when the field is hidden', () => {
+    const s = useLogStore.getState();
+    s.setAxisOverride('ATT.Roll', 1);
+    s.toggleField(ROLL);
+    expect(overrides()).toEqual({});
+  });
+
+  // Regression: purgeMessage drops selected fields directly instead of going
+  // through toggleField, so a pin used to survive it and spring back later.
+  it('drops the pin when the whole message is purged', () => {
+    useLogStore.setState({
+      log: {
+        messages: { ATT: {} as never, GPS: {} as never },
+        trajectory: {} as never,
+        startTime: 0,
+        endTime: 1,
+      } as never,
+    });
+    const s = useLogStore.getState();
+    s.setAxisOverride('ATT.Roll', 1);
+    s.setAxisOverride('GPS.Alt', 1);
+    s.purgeMessage('ATT');
+
+    expect(overrides()).toEqual({ 'GPS.Alt': 1 });
+    expect(useLogStore.getState().selectedFields).toEqual([ALT]);
+  });
+});

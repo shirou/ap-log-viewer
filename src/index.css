@@ -329,6 +329,14 @@ input[type="text"] {
 .plot-tooltip .tt-label {
   color: var(--muted);
 }
+/* Which axis this value was read against. Full --text, not --muted: a 10px
+   glyph in grey is the first thing to disappear under direct sunlight. */
+.plot-tooltip .tt-axis {
+  flex: none;
+  color: var(--text);
+  font-size: 10px;
+  line-height: 1;
+}
 .plot-tooltip .tt-val {
   margin-left: auto;
   padding-left: 10px;
@@ -342,6 +350,46 @@ input[type="text"] {
 }
 .chip:hover {
   border-color: var(--accent-2);
+}
+
+/* Series chips hold two separate controls, so the chip itself is a plain
+   container and has to draw the border the global button rule would have
+   given it. That same rule also puts a 6px-radius box and 4px 10px of padding
+   on the controls inside, which has to come back off or the pill grows a pair
+   of buttons inside it. */
+.series-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 2px;
+  border: 1px solid var(--border);
+  /* The pill is no longer a button, and the global button rule is what used to
+     supply the pointer. Without this the inert middle reads as selectable text
+     while :hover still lights the border as if the whole chip were clickable. */
+  cursor: default;
+}
+.series-chip > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* Splitting one pill into two controls shrank each target; hold them at the
+     24px WCAG 2.5.8 minimum so they stay hittable with gloves on a boat. */
+  min-width: 24px;
+  min-height: 24px;
+  border: 1px solid transparent;
+  background: none;
+  border-radius: 999px;
+  padding: 0 4px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: inherit;
+}
+.series-chip > button:hover {
+  background: var(--panel);
+  border-color: var(--accent-2);
+}
+.series-chip > .chip-label {
+  padding: 0 2px;
 }
 
 .tree-toolbar {
