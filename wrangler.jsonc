@@ -1,0 +1,35 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ap-log-viewer",
+  "compatibility_date": "2026-07-19",
+
+  // Opt out of Wrangler's anonymous usage telemetry, consistent with the rest
+  // of the toolchain (see .npmrc's ignore-scripts, the pinned-SHA workflows).
+  "send_metrics": false,
+
+  // Assets-only Worker: the app is a pure static SPA (all log parsing happens
+  // in a browser Web Worker, there is no API), so there is no `main` entrypoint.
+  // Deployed from the Cloudflare dashboard's Git integration (Workers Builds),
+  // which runs the build command and then `npx wrangler deploy`.
+  "assets": {
+    // Shared with the Go build on purpose: cmd/server embeds this same
+    // directory via //go:embed (internal/web/embed.go), so the hosted site and
+    // the downloadable binary serve byte-identical assets. Do not "tidy" this
+    // to ./dist -- vite.config.ts points here for the embed, not for Cloudflare.
+    "directory": "./internal/web/dist",
+
+    // Serve public/404.html (Vite copies it to the build output) with a 404,
+    // rather than the SPA shell. staticHandler in cmd/server/main.go does the
+    // same, so the hosted site and the binary answer every path identically.
+    //
+    // Not the SPA shell, because nothing needs it: there is no client-side
+    // router (src/App.tsx is useState tabs). Returning it would only cost --
+    // this app lazy-loads maplibre and the parser worker, so a tab left open
+    // across a redeploy requests a hashed chunk that is gone, and the shell
+    // hands the browser HTML to parse as JavaScript instead of a clean 404.
+    //
+    // If a router is ever added, both sides need the fallback restored
+    // together: this key and staticHandler.
+    "not_found_handling": "404-page"
+  }
+}

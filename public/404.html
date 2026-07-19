@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Not found · ArduPilot Log Viewer</title>
+    <script>
+      // Same pre-paint theme resolution as index.html, so a 404 does not flash
+      // the wrong theme. Kept inline and duplicated on purpose: this page must
+      // stand alone, with no bundle and no dependency on the app's assets.
+      (function () {
+        try {
+          var t = localStorage.getItem('theme');
+          if (t !== 'light' && t !== 'dark') {
+            t =
+              window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+                ? 'light'
+                : 'dark';
+          }
+          document.documentElement.setAttribute('data-theme', t);
+        } catch (e) {}
+      })();
+    </script>
+    <style>
+      /* Mirrors the palette in src/index.css. Inlined rather than imported so
+         this page renders even when the hashed asset bundle is unavailable --
+         which is one of the cases that gets you here in the first place. */
+      :root,
+      :root[data-theme='dark'] {
+        --bg: #0e1116;
+        --panel: #161b22;
+        --border: #2a3340;
+        --text: #d6deeb;
+        --muted: #8290a3;
+        --accent: #4fd1c5;
+      }
+      :root[data-theme='light'] {
+        --bg: #eceff3;
+        --panel: #ffffff;
+        --border: #7c8a9b;
+        --text: #0b1015;
+        --muted: #46515e;
+        --accent: #0a6e66;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font: 13px/1.4 ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 32px 40px;
+        max-width: 30rem;
+        text-align: center;
+      }
+      .code {
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin: 0 0 12px;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0 0 12px;
+      }
+      p {
+        font-size: 14px;
+        color: var(--muted);
+        margin: 0 0 24px;
+      }
+      a {
+        display: inline-block;
+        color: var(--text);
+        background: transparent;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 8px 16px;
+        text-decoration: none;
+      }
+      a:hover,
+      a:focus-visible {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <p class="code">404</p>
+      <h1>That page does not exist</h1>
+      <p>
+        The address may be mistyped, or it pointed at a build asset that a newer
+        deploy has replaced. Reloading the viewer will pick up the current build.
+      </p>
+      <a href="/">Open the log viewer</a>
+    </div>
+  </body>
+</html>

@@ -5,6 +5,15 @@ logs in the browser and visualize the flight path, time-series data, and paramet
 All parsing happens entirely in the browser (Web Worker). A modern-stack rebuild of
 [uavlogviewer](https://github.com/ardupilot/uavlogviewer).
 
+There are two ways to run it, and they serve the same build:
+
+- **Hosted** — <https://ap-log-viewer.minidev.workers.dev/> — drop a log in and go.
+  Nothing is uploaded; parsing runs in a Web Worker on your machine and the file
+  never leaves the browser.
+- **Self-contained binary** — download a single executable from
+  [Releases](https://github.com/shirou/ap-log-viewer/releases) and run it offline.
+  No Node, no assets, no network.
+
 ## Stack
 
 - Frontend: React + Vite + TypeScript
@@ -81,6 +90,55 @@ Run a built binary anywhere:
 ./build/ap-log-viewer_<version>_linux_amd64 -addr :8080   # http://localhost:8080
 ap-log-viewer_<version>_windows_amd64.exe -version        # print the build version
 ```
+
+## Hosting (Cloudflare Workers)
+
+Deployed at <https://ap-log-viewer.minidev.workers.dev/>.
+
+The hosted build runs as an **assets-only Worker** — there is no server-side code,
+because the app never talks to a backend. `wrangler.jsonc` points Cloudflare at
+`internal/web/dist`, the *same* directory `//go:embed` bundles into the binary, so
+both distribution channels serve identical assets and cannot drift.
+
+Deployment is driven by Cloudflare's Git integration (Workers Builds), not by a
+GitHub Actions workflow — that keeps Cloudflare credentials out of the repo's CI
+entirely. The dashboard side is configured as follows (one-time setup, already done —
+recorded here so it can be reproduced or audited):
+
+1. **Workers & Pages → Create** a Worker named `ap-log-viewer`
+   (must match `name` in `wrangler.jsonc`, or builds fail).
+2. **Settings → Builds → Connect** to the `shirou/ap-log-viewer` GitHub repo.
+3. Build settings:
+   - Build command: `npm ci --ignore-scripts && npm run build`
+   - Deploy command: `npx wrangler deploy` (the default)
+   - Root directory: leave empty
+4. Set the production branch to `main`.
+
+Pushes to `main` deploy; other branches get a preview URL via
+`npx wrangler versions upload`. Node version comes from `.nvmrc` (22) — if a build
+log shows otherwise, set a `NODE_VERSION` build variable instead.
+
+Unmatched paths serve `public/404.html` with a 404 (`not_found_handling:
+"404-page"`) rather than the SPA shell. There is no client-side router, so
+nothing needs an SPA fallback, and returning the shell would hand the browser
+HTML for a stale hashed chunk instead of a clean 404.
+
+`cmd/server` does the same thing, so the hosted site and the binary answer every
+path identically — verified request by request, down to the byte count. If a
+client-side router is ever added, both sides need the SPA fallback restored
+together: `not_found_handling` in `wrangler.jsonc` and `staticHandler` in
+`cmd/server/main.go`.
+
+Check the config or preview it locally without deploying:
+
+```sh
+npm run build
+npx wrangler deploy --dry-run   # validate wrangler.jsonc, upload nothing
+npx wrangler dev                # http://localhost:8787 (not 8788 — that was Pages)
+```
+
+> Cloudflare now steers new projects to Workers static assets rather than Pages;
+> Pages still works but is in maintenance mode.
 
 ## Releases
 
