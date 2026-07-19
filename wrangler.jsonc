@@ -18,9 +18,23 @@
     // to ./dist -- vite.config.ts points here for the embed, not for Cloudflare.
     "directory": "./internal/web/dist",
 
-    // Mirrors spaHandler in cmd/server/main.go. There is no client-side router
-    // today, so this is currently inert; it keeps the hosted build from
-    // diverging from the binary if routing is ever added.
-    "not_found_handling": "single-page-application"
+    // Serve public/404.html (copied to the build output by Vite) rather than
+    // the SPA shell. Cloudflare has no mode that reproduces spaHandler in
+    // cmd/server/main.go exactly -- that one 404s a missing path only when it
+    // has a file extension, and falls through to index.html otherwise:
+    //
+    //   path                        Go            404-page      single-page-application
+    //   /assets/stale-HASH.js       404           404           200 text/html
+    //   /foo                        index.html    404           200 index.html
+    //
+    // "404-page" matches Go on the case that can actually bite. A stale hashed
+    // chunk -- this app lazy-loads maplibre and the parser worker, so an old tab
+    // can request one after a redeploy -- fails as a clean 404 instead of
+    // handing the browser HTML to parse as JavaScript.
+    //
+    // The /foo row diverges, but only in theory: there is no client-side router
+    // (src/App.tsx is useState tabs), so no path needs the SPA fallback today.
+    // Switch to "single-page-application" if routing is ever added.
+    "not_found_handling": "404-page"
   }
 }
