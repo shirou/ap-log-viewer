@@ -25,6 +25,25 @@ export interface Trajectory {
   heading: Float64Array; // degrees clockwise from north; NaN where unknown
 }
 
+/**
+ * One item of the uploaded flight plan that has a usable position.
+ *
+ * Non-positional commands (RTL, DO_JUMP, condition commands, ...) are dropped
+ * while parsing, but `seq` is the vehicle's own mission index, so the numbers
+ * drawn on the map still line up with the mission list in a GCS.
+ */
+export interface Waypoint {
+  /** Mission sequence index as stored on the vehicle (0 is the planned home). */
+  seq: number;
+  /** MAV_CMD id — 16 = NAV_WAYPOINT, 22 = NAV_TAKEOFF, 21 = NAV_LAND, ... */
+  command: number;
+  lat: number; // degrees
+  lon: number; // degrees
+  alt: number; // meters, interpreted in `frame`
+  /** MAV_FRAME the altitude is expressed in (3 = relative to home). */
+  frame: number;
+}
+
 export interface ModeChange {
   time: number; // microseconds
   mode: string;
@@ -44,6 +63,8 @@ export interface LogData {
   modes: ModeChange[];
   texts: TextMessage[];
   trajectory: Trajectory;
+  /** Planned flight path, ordered by `seq`. Empty when the log carries none. */
+  mission: Waypoint[];
   /** Microseconds. Same clock as `MessageSeries.time`. */
   startTime: number;
   endTime: number;

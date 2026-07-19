@@ -13,6 +13,7 @@ import type { LogData, ModeChange, TextMessage } from '../model/log.ts';
 import type { LogSource } from './source.ts';
 import { FORMAT_TYPES, formatSize } from './formatChars.ts';
 import { LogBuilder, extractTrajectory, type ColumnDef } from './columnar.ts';
+import { MissionCollector, sniffDegrees } from './mission.ts';
 
 const HEAD1 = 0xa3;
 const HEAD2 = 0x95;
@@ -44,6 +45,7 @@ interface ParseState {
   params: Record<string, number>;
   modes: ModeChange[];
   texts: TextMessage[];
+  mission: MissionCollector;
   minTime: number;
   maxTime: number;
   lastTime: number;
@@ -64,6 +66,7 @@ export async function parseDataflash(source: LogSource, opts: ParseOptions = {})
     params: {},
     modes: [],
     texts: [],
+    mission: new MissionCollector(),
     minTime: Infinity,
     maxTime: -Infinity,
     lastTime: 0,
@@ -135,6 +138,7 @@ export async function parseDataflash(source: LogSource, opts: ParseOptions = {})
     modes: st.modes,
     texts: st.texts,
     trajectory,
+    mission: st.mission.finalize(),
     startTime: minTime,
     endTime: maxTime,
   };
@@ -181,7 +185,7 @@ function parseChunk(bytes: Uint8Array, st: ParseState, final: boolean): number {
         t = st.lastTime;
       }
       st.builder.push(type, fmt.name, fmt.columns, values, t);
-      extractSpecial(fmt.name, values, t, st.params, st.modes, st.texts);
+      extractSpecial(st, fmt.name, values, t);
     }
 
     offset = bodyStart + fmt.bodySize;
@@ -222,23 +226,21 @@ function registerFormat(formats: Map<number, MsgFormat>, values: Record<string, 
 }
 
 function extractSpecial(
+  st: ParseState,
   name: string,
   values: Record<string, number | string>,
   time: number,
-  params: Record<string, number>,
-  modes: ModeChange[],
-  texts: TextMessage[],
 ): void {
   switch (name) {
     case 'PARM': {
       const n = values['Name'];
       const v = values['Value'];
-      if (typeof n === 'string' && typeof v === 'number') params[n] = v;
+      if (typeof n === 'string' && typeof v === 'number') st.params[n] = v;
       break;
     }
     case 'MSG': {
       const m = values['Message'];
-      if (typeof m === 'string') texts.push({ time, text: m });
+      if (typeof m === 'string') st.texts.push({ time, text: m });
       break;
     }
     case 'MODE': {
@@ -246,7 +248,34 @@ function extractSpecial(
       const num = values['ModeNum'];
       const label = typeof mode === 'number' ? `Mode ${mode}` : String(mode ?? num ?? '?');
       // Collapse consecutive identical modes (MODE can be logged periodically).
-      if (modes[modes.length - 1]?.mode !== label) modes.push({ time, mode: label });
+      if (st.modes[st.modes.length - 1]?.mode !== label) st.modes.push({ time, mode: label });
+      break;
+    }
+    // The uploaded mission, re-dumped in full whenever the plan changes:
+    //   TimeUS,CTot,CNum,CId,Prm1..Prm4,Lat,Lng,Alt,Frame
+    //
+    // 4.6 added a `MISE` message sharing this exact layout, and it is
+    // deliberately not read here: MISE logs one item as it *starts executing*,
+    // so it is not the plan but a trace through it — partial when a mission is
+    // cut short, and repeating indices wherever a DO_JUMP loops.
+    case 'CMD': {
+      const num = (label: string): number => {
+        const v = values[label];
+        return typeof v === 'number' ? v : NaN;
+      };
+      const seq = num('CNum');
+      if (!Number.isFinite(seq)) break;
+      // Lat/Lng are int32 degE7 on disk; the `L` format char already unscales
+      // them, so sniffDegrees is here for logs that declare them otherwise.
+      const { lat, lon } = sniffDegrees(num('Lat'), num('Lng'));
+      st.mission.add({
+        seq,
+        command: num('CId'),
+        lat,
+        lon,
+        alt: num('Alt'), // metres, in `Frame`
+        frame: num('Frame'),
+      });
       break;
     }
   }

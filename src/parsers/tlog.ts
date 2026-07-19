@@ -15,6 +15,7 @@ import type { LogData, ModeChange, TextMessage } from '../model/log.ts';
 import type { LogSource } from './source.ts';
 import type { ParseOptions } from './dataflash.ts';
 import { LogBuilder, extractTrajectory, type ColumnDef } from './columnar.ts';
+import { MissionCollector } from './mission.ts';
 
 // mavlink-mappings references the Node global `Buffer`; provide the polyfill.
 const g = globalThis as unknown as { Buffer?: typeof Buffer };
@@ -75,6 +76,10 @@ export async function parseTlog(source: LogSource, opts: ParseOptions = {}): Pro
   const params: Record<string, number> = {};
   const modes: ModeChange[] = [];
   const texts: TextMessage[] = [];
+  // MISSION_ITEM_INT is the current form and MISSION_ITEM the deprecated one;
+  // a session can carry both, so collect them apart and prefer the int form.
+  const missionInt = new MissionCollector();
+  const missionFloat = new MissionCollector();
   let minTime = Infinity;
   let maxTime = -Infinity;
   let lastMode = '';
@@ -121,6 +126,14 @@ export async function parseTlog(source: LogSource, opts: ParseOptions = {}): Pro
         }
         builder.push(msgid, clazz.MSG_NAME, columns, msg, ts);
         lastMode = extractSpecial(clazz.MSG_NAME, msg, ts, params, modes, texts, lastMode);
+        if (clazz.MSG_NAME === 'MISSION_ITEM_INT') addMissionItem(missionInt, msg, 1e-7);
+        else if (clazz.MSG_NAME === 'MISSION_ITEM') addMissionItem(missionFloat, msg, 1);
+        else if (clazz.MSG_NAME === 'MISSION_COUNT' && isFlightPlan(msg)) {
+          // MISSION_COUNT opens every full transfer, up- or download, so it is
+          // the one unambiguous "a new plan starts here" marker in the stream.
+          missionInt.beginTransfer();
+          missionFloat.beginTransfer();
+        }
       } catch {
         // ignore a malformed frame, keep scanning
       }
@@ -159,6 +172,8 @@ export async function parseTlog(source: LogSource, opts: ParseOptions = {}): Pro
     maxTime = 0;
   }
 
+  const mission = missionInt.finalize();
+
   return {
     source: 'tlog',
     messages,
@@ -166,9 +181,48 @@ export async function parseTlog(source: LogSource, opts: ParseOptions = {}): Pro
     modes,
     texts,
     trajectory,
+    mission: mission.length ? mission : missionFloat.finalize(),
     startTime: minTime,
     endTime: maxTime,
   };
+}
+
+/** MAV_MISSION_TYPE.MISSION — the flight plan. 1 is a geofence, 2 a rally point. */
+const MAV_MISSION_TYPE_MISSION = 0;
+
+function numberFrom(msg: Record<string, unknown>, name: string): number {
+  const v = msg[name];
+  return typeof v === 'number' ? v : typeof v === 'bigint' ? Number(v) : NaN;
+}
+
+/**
+ * True for messages belonging to the flight plan rather than a fence or rally
+ * transfer, which reuse these same message ids.
+ *
+ * missionType is a MAVLink 2 extension field, but `deserialize` zero-fills a
+ * payload that stops short of it, so it reads as 0 — MISSION — on the v1 frames
+ * and older senders that omit it entirely. That is the right default, and it is
+ * why this is a plain equality test with no absent-field case.
+ */
+function isFlightPlan(msg: Record<string, unknown>): boolean {
+  return numberFrom(msg, 'missionType') === MAV_MISSION_TYPE_MISSION;
+}
+
+// x/y are latitude/longitude and z is metres. The message id fixes the unit, so
+// unlike the DataFlash path there is nothing to infer: MISSION_ITEM_INT is
+// degE7, and the deprecated MISSION_ITEM is already plain degrees.
+function addMissionItem(into: MissionCollector, msg: Record<string, unknown>, scale: number): void {
+  if (!isFlightPlan(msg)) return;
+  const seq = numberFrom(msg, 'seq');
+  if (!Number.isFinite(seq)) return;
+  into.add({
+    seq,
+    command: numberFrom(msg, 'command'),
+    lat: numberFrom(msg, 'x') * scale,
+    lon: numberFrom(msg, 'y') * scale,
+    alt: numberFrom(msg, 'z'),
+    frame: numberFrom(msg, 'frame'),
+  });
 }
 
 // Column layout for a message type, derived from the first decoded instance.
