@@ -14,6 +14,36 @@ There are two ways to run it, and they serve the same build:
   [Releases](https://github.com/shirou/ap-log-viewer/releases) and run it offline.
   No Node, no assets, no network.
 
+## Mission waypoints
+
+The planned mission is drawn on the map as a layer you can switch off, taken
+from the log itself:
+
+- `.bin` — the `CMD` messages, which hold the whole uploaded mission.
+- `.tlog` — `MISSION_ITEM_INT` (or the deprecated `MISSION_ITEM`).
+
+**A tlog only contains the mission if a transfer happened while it was being
+recorded** — the GCS downloading it on connect, or an upload. Flying a mission
+is not enough; if that exchange was not captured, the plan is simply not in the
+file, and the Layers panel says so rather than hiding the control.
+
+For those logs, load the plan separately with **Load plan file…** in the Layers
+panel:
+
+- **QGC WPL** text (`.waypoints`, `.txt`) — Mission Planner, MAVProxy
+- **QGC `.plan`** JSON — QGroundControl
+
+Which of the two it is comes from the content, not the extension — Mission
+Planner writes the text format under either name, so the file picker's filter is
+only a convenience.
+
+A loaded plan overrides the one in the log, and the map moves to it (and back to
+the flight when it is removed). QGC surveys and corridor scans store their
+generated waypoints, so they are drawn in full. Structure scans and landing
+patterns instead store the geometry QGC regenerates them from, and so cannot be.
+Anything the file holds no usable waypoints for is counted and reported on the
+map panel rather than silently dropped.
+
 ## Stack
 
 - Frontend: React + Vite + TypeScript
@@ -26,7 +56,8 @@ There are two ways to run it, and they serve the same build:
 ## Directory layout
 
 ```
-src/parsers/      Log parsers (source / dataflash / tlog / worker)
+src/parsers/      Log parsers (source / dataflash / tlog / worker) + mission extraction
+                  (mission.ts) and standalone plan files (missionFile.ts)
 src/components/   UI (Map / Plot / Timeline / FieldTree / ...)
 src/store/        zustand store
 cmd/server/       Go static file server

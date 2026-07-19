@@ -114,13 +114,25 @@ export default function MapView() {
   const displayTime = useLogStore(selectDisplayTime);
   const theme = useLogStore((s) => s.theme);
 
+  const missionFile = useLogStore((s) => s.missionFile);
+  const missionFileError = useLogStore((s) => s.missionFileError);
+  const loadMissionFile = useLogStore((s) => s.loadMissionFile);
+  const clearMissionFile = useLogStore((s) => s.clearMissionFile);
+
   const traj = log?.trajectory;
-  const mission = log?.mission;
+  // A loaded plan file wins over whatever the log carries: picking the file is
+  // a deliberate act, and the log's own copy is still one click away.
+  const mission = missionFile?.waypoints ?? log?.mission;
+  const hasMission = !!mission?.length;
+  const missionInput = useRef<HTMLInputElement>(null);
+  // Distinguishes "no plan has ever been loaded" from "the plan was removed",
+  // so only the latter pulls the camera back to the flight.
+  const hadMissionFile = useRef(false);
 
   const [base, setBase] = useState<BaseKey>('osm');
   const [seamark, setSeamark] = useState(false);
-  // Starts on, but the toggle only appears for logs that carry a plan, so this
-  // shows the mission straight away without adding a control to logs with none.
+  // Starts on, so a log that carries a plan shows it straight away. The toggle
+  // itself is always listed and merely disabled when there is nothing to draw.
   const [showMission, setShowMission] = useState(true);
   const [controlsOpen, setControlsOpen] = useState(true);
   const [measuring, setMeasuring] = useState(false);
@@ -379,6 +391,44 @@ export default function MapView() {
     [dragIdx],
   );
 
+  // Move the camera with the plan, in both directions. The initial view frames
+  // the flight, and a plan file need not be anywhere near it — it can belong to
+  // a different site entirely, or the log may have no position data to frame at
+  // all — so loading one without this looks identical to loading nothing.
+  // Removing it has the mirror problem: the view is left over empty ground
+  // wherever the plan was, so the flight is framed again on the way out.
+  useEffect(() => {
+    const wps = missionFile?.waypoints;
+    const points: Array<{ lat: number; lon: number }> = [];
+    if (wps?.length) {
+      points.push(...wps);
+      // The plan was just asked for by hand; flying to a layer that is switched
+      // off would show empty ground and look like a failed load.
+      setShowMission(true);
+    } else if (hadMissionFile.current && traj?.lat.length) {
+      for (let i = 0; i < traj.lat.length; i++) points.push({ lat: traj.lat[i], lon: traj.lon[i] });
+    }
+    hadMissionFile.current = !!wps?.length;
+    if (points.length === 0) return;
+
+    let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
+    for (const p of points) {
+      minLat = Math.min(minLat, p.lat);
+      maxLat = Math.max(maxLat, p.lat);
+      minLon = Math.min(minLon, p.lon);
+      maxLon = Math.max(maxLon, p.lon);
+    }
+    mapRef.current?.getMap().fitBounds(
+      [
+        [minLon, minLat],
+        [maxLon, maxLat],
+      ],
+      // maxZoom keeps a single-waypoint plan (zero-span bounds) from slamming
+      // the camera to full zoom.
+      { padding: 48, maxZoom: 17, duration: 600 },
+    );
+  }, [missionFile, traj]);
+
   // Safety net: if the mouse is released off the map, still end the drag and
   // re-enable panning so the map can't get stuck.
   useEffect(() => {
@@ -431,7 +481,7 @@ export default function MapView() {
         >
           <span>
             🗺 Layers
-            {!controlsOpen && showMission && !!mission?.length ? ' · 📍' : ''}
+            {!controlsOpen && showMission && hasMission ? ' · 📍' : ''}
             {!controlsOpen && measuring ? ' · 📏' : ''}
           </span>
           <span className="chevron">{controlsOpen ? '▾' : '▸'}</span>
@@ -456,16 +506,77 @@ export default function MapView() {
               />
               Nautical chart (OpenSeaMap)
             </label>
-            {!!mission?.length && (
-              <label title="Show the uploaded flight plan (mission waypoints)">
-                <input
-                  type="checkbox"
-                  checked={showMission}
-                  onChange={(e) => setShowMission(e.target.checked)}
-                />
-                Mission waypoints <span className="count">({mission.length})</span>
-              </label>
+            {/* Shown even with nothing to draw, and disabled instead. Hiding it
+                made "this viewer cannot do that" and "this log does not contain
+                that" look identical, which is a question the panel is in the
+                best position to answer. */}
+            <label
+              className={hasMission ? undefined : 'disabled'}
+              title={
+                hasMission
+                  ? 'Show the flight plan (mission waypoints)'
+                  : 'This log records no mission'
+              }
+            >
+              <input
+                type="checkbox"
+                checked={hasMission && showMission}
+                disabled={!hasMission}
+                onChange={(e) => setShowMission(e.target.checked)}
+              />
+              Mission waypoints <span className="count">({mission?.length ?? 0})</span>
+            </label>
+            {!hasMission && (
+              <div className="plot-hint">
+                No mission in this log.
+                {log?.source === 'tlog'
+                  ? ' A tlog only carries one if the mission was transferred while recording.'
+                  : ' Missions are read from CMD messages.'}
+              </div>
             )}
+            <div className="mission-file">
+              <input
+                ref={missionInput}
+                type="file"
+                accept=".waypoints,.txt,.plan"
+                hidden
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void loadMissionFile(f);
+                  // Clear the input so picking the same file again re-reads it.
+                  e.target.value = '';
+                }}
+              />
+              {missionFile && (
+                <div className="mission-file-name" title={missionFile.name}>
+                  📄 {missionFile.name}
+                </div>
+              )}
+              {/* Always offered, so a plan can be replaced in one step rather
+                  than removed first — which is also what makes a failed load
+                  able to leave the current plan standing. */}
+              <div className="mission-file-actions">
+                <button onClick={() => missionInput.current?.click()}>
+                  {missionFile ? 'Replace…' : '📄 Load plan file…'}
+                </button>
+                {missionFile && <button onClick={clearMissionFile}>Remove</button>}
+              </div>
+              {missionFile && missionFile.unreadable > 0 && (
+                // Deliberately not naming a cause. The count covers structure
+                // scans and landing patterns, which the file describes as
+                // geometry, but also an empty transect list and any item whose
+                // coordinates would not read — so any specific reason given
+                // here would be wrong for some of what it is counting.
+                <div className="plot-hint">
+                  {missionFile.unreadable} item{missionFile.unreadable > 1 ? 's' : ''} not drawn —
+                  the file has no usable waypoints for {missionFile.unreadable > 1 ? 'them' : 'it'}.
+                </div>
+              )}
+              {missionFileError && <div className="mission-file-error">{missionFileError}</div>}
+              {!missionFile && !missionFileError && (
+                <div className="plot-hint">.waypoints / .txt / .plan</div>
+              )}
+            </div>
             <button
               className={measuring ? 'primary' : ''}
               onClick={() => {
