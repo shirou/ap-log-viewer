@@ -3,6 +3,14 @@ import type { FieldRef, LogData, ParseMessage } from '../model/log.ts';
 import { fieldKey } from '../model/log.ts';
 import type { AxisSide } from '../lib/axisGroups.ts';
 
+/**
+ * Axis pins by fieldKey. Deliberately not `Record<string, AxisSide>`: most keys
+ * are absent (absent means automatic), and that type would have TypeScript
+ * promise every lookup returns a side, hiding the `undefined` every caller has
+ * to handle.
+ */
+export type AxisOverrides = Record<string, AxisSide | undefined>;
+
 export type Status = 'idle' | 'parsing' | 'ready' | 'error';
 
 export type Theme = 'light' | 'dark';
@@ -53,7 +61,7 @@ export interface LogState {
   // Plot selection.
   selectedFields: FieldRef[];
   /** Fields pinned to a y axis by hand, keyed by fieldKey. Absent = automatic. */
-  axisOverride: Record<string, AxisSide>;
+  axisOverride: AxisOverrides;
 
   // Timeline / playback (cursorTime is the single source of truth, microseconds).
   cursorTime: number;
@@ -116,12 +124,12 @@ function defaultFields(log: LogData): FieldRef[] {
  * it. Every path that removes a field routes through here — note that
  * purgeMessage drops fields without going near toggleField.
  */
-function pruneOverrides(overrides: Record<string, AxisSide>, fields: FieldRef[]): Record<string, AxisSide> {
+function pruneOverrides(overrides: AxisOverrides, fields: FieldRef[]): AxisOverrides {
   const keys = Object.keys(overrides);
   if (keys.length === 0) return overrides;
   const keep = new Set(fields.map(fieldKey));
   if (keys.every((k) => keep.has(k))) return overrides;
-  const out: Record<string, AxisSide> = {};
+  const out: AxisOverrides = {};
   for (const k of keys) if (keep.has(k)) out[k] = overrides[k];
   return out;
 }

@@ -42,6 +42,14 @@ interface Built extends Merged {
 /** Marks which axis a series is drawn against. Shape, not colour, so it survives glare. */
 const GLYPH = ['◀', '▶'] as const;
 
+/** A tooltip cell. Text goes in as text, never as markup — see showTip. */
+function span(className: string, text: string): HTMLSpanElement {
+  const el = document.createElement('span');
+  el.className = className;
+  el.textContent = text;
+  return el;
+}
+
 // Merge selected series onto a common x-axis (seconds since log start), filling
 // gaps with null where a series has no sample. Each message's time array is
 // already sorted, so we k-way merge them.
@@ -175,17 +183,24 @@ export default function PlotPanel() {
       if (idx == null || left < 0 || top < 0) return;
       const xs = u.data[0];
       const t = xs[idx] as number;
-      const rows = built.labels
-        .map((label, i) => {
-          const v = u.data[i + 1]?.[idx];
-          const color = palette[i % palette.length];
-          // With two scales the same pixel height means different things per
-          // row, so say which axis each value was read against.
-          const axis = built.axes.split ? `<span class="tt-axis">${GLYPH[built.axes.side[i]]}</span>` : '';
-          return `<div class="tt-row"><span class="tt-dot" style="background:${color}"></span>${axis}<span class="tt-label">${label}</span><span class="tt-val">${fmtVal(v)}</span></div>`;
-        })
-        .join('');
-      tooltip.innerHTML = `<div class="tt-time">${fmtVal(t)}s</div>${rows}`;
+      // Built as nodes rather than an HTML string. Series labels are message
+      // and column names copied verbatim out of the log's own FMT records
+      // (src/parsers/dataflash.ts), so a crafted file can put anything it likes
+      // in one — through innerHTML that is script execution on hover, and
+      // opening files you did not write is the whole point of this app.
+      tooltip.replaceChildren(span('tt-time', `${fmtVal(t)}s`));
+      built.labels.forEach((label, i) => {
+        const row = document.createElement('div');
+        row.className = 'tt-row';
+        const dot = span('tt-dot', '');
+        dot.style.background = palette[i % palette.length];
+        row.append(dot);
+        // With two scales the same pixel height means different things per row,
+        // so say which axis each value was read against.
+        if (built.axes.split) row.append(span('tt-axis', GLYPH[built.axes.side[i]]));
+        row.append(span('tt-label', label), span('tt-val', fmtVal(u.data[i + 1]?.[idx])));
+        tooltip.append(row);
+      });
       tooltip.style.display = 'block';
       // Place near the cursor, flipping left/up when close to the edges.
       //
