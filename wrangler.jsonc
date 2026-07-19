@@ -18,23 +18,18 @@
     // to ./dist -- vite.config.ts points here for the embed, not for Cloudflare.
     "directory": "./internal/web/dist",
 
-    // Serve public/404.html (copied to the build output by Vite) rather than
-    // the SPA shell. Cloudflare has no mode that reproduces spaHandler in
-    // cmd/server/main.go exactly -- that one 404s a missing path only when it
-    // has a file extension, and falls through to index.html otherwise:
+    // Serve public/404.html (Vite copies it to the build output) with a 404,
+    // rather than the SPA shell. staticHandler in cmd/server/main.go does the
+    // same, so the hosted site and the binary answer every path identically.
     //
-    //   path                        Go            404-page      single-page-application
-    //   /assets/stale-HASH.js       404           404           200 text/html
-    //   /foo                        index.html    404           200 index.html
+    // Not the SPA shell, because nothing needs it: there is no client-side
+    // router (src/App.tsx is useState tabs). Returning it would only cost --
+    // this app lazy-loads maplibre and the parser worker, so a tab left open
+    // across a redeploy requests a hashed chunk that is gone, and the shell
+    // hands the browser HTML to parse as JavaScript instead of a clean 404.
     //
-    // "404-page" matches Go on the case that can actually bite. A stale hashed
-    // chunk -- this app lazy-loads maplibre and the parser worker, so an old tab
-    // can request one after a redeploy -- fails as a clean 404 instead of
-    // handing the browser HTML to parse as JavaScript.
-    //
-    // The /foo row diverges, but only in theory: there is no client-side router
-    // (src/App.tsx is useState tabs), so no path needs the SPA fallback today.
-    // Switch to "single-page-application" if routing is ever added.
+    // If a router is ever added, both sides need the fallback restored
+    // together: this key and staticHandler.
     "not_found_handling": "404-page"
   }
 }

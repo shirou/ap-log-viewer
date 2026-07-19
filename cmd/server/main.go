@@ -1,9 +1,10 @@
 // Command server is a small static httpd for the ArduPilot Log Viewer frontend.
 //
-// Today it only serves the built single-page app (with SPA fallback). It is the
-// seam for future backend work (S3-backed log storage, upload API, auth); those
-// will plug in alongside the static handler. See internal/storage for the
-// storage abstraction that a future backend will implement.
+// Today it only serves the built frontend, matching how the hosted build is
+// served from Cloudflare (see wrangler.jsonc). It is the seam for future backend
+// work (S3-backed log storage, upload API, auth); those will plug in alongside
+// the static handler. See internal/storage for the storage abstraction that a
+// future backend will implement.
 package main
 
 import (
@@ -51,7 +52,7 @@ func main() {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	})
-	mux.Handle("/", spaHandler(content))
+	mux.Handle("/", staticHandler(content))
 
 	srv := &http.Server{
 		Addr:              *addr,
@@ -64,34 +65,47 @@ func main() {
 	}
 }
 
-// spaHandler serves static files and falls back to index.html for unknown
-// client-side routes. A path that resolves to a missing asset (anything with a
-// file extension) or a real directory returns 404 rather than the SPA shell, so
-// a stale hashed bundle fails cleanly instead of being served HTML, and the
-// embedded build's directory structure is never listed.
-func spaHandler(content fs.FS) http.Handler {
+// staticHandler serves the built frontend. Anything that does not resolve to a
+// real file -- a missing asset, a directory, an unknown path -- gets 404.html
+// with a 404 status, and the embedded build's directory structure is never
+// listed.
+//
+// Nothing falls back to index.html. There is no client-side router (src/App.tsx
+// is useState tabs), so no path needs an SPA shell, and serving it would hand
+// the browser HTML to parse as JavaScript whenever a stale hashed chunk is
+// requested -- the app lazy-loads maplibre and the parser worker, so a tab left
+// open across an upgrade does exactly that.
+//
+// This is deliberately identical to what the hosted build does via
+// not_found_handling: "404-page" (see wrangler.jsonc), so the binary and
+// https://ap-log-viewer.minidev.workers.dev cannot drift. If a router is ever
+// added, both sides need the SPA fallback restored together.
+func staticHandler(content fs.FS) http.Handler {
 	fileServer := http.FileServer(http.FS(content))
-	serveIndex := func(w http.ResponseWriter, r *http.Request) {
-		r = r.Clone(r.Context())
-		r.URL.Path = "/"
-		fileServer.ServeHTTP(w, r)
+	// Falls back to the stdlib plain-text 404 when the page is missing, so
+	// `-dir` pointed at a tree built before 404.html existed still works.
+	notFound := func(w http.ResponseWriter, r *http.Request) {
+		page, err := fs.ReadFile(content, "404.html")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write(page) // net/http discards this for HEAD
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		name := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
 		if name == "" {
-			serveIndex(w, r)
-			return
+			name = "index.html"
+			r = r.Clone(r.Context())
+			r.URL.Path = "/"
 		}
-		info, err := fs.Stat(content, name)
-		if err == nil && !info.IsDir() {
+		if info, err := fs.Stat(content, name); err == nil && !info.IsDir() {
 			fileServer.ServeHTTP(w, r)
 			return
 		}
-		// Missing asset or a directory: don't mask it as the SPA shell.
-		if path.Ext(name) != "" || (err == nil && info.IsDir()) {
-			http.NotFound(w, r)
-			return
-		}
-		serveIndex(w, r)
+		notFound(w, r)
 	})
 }

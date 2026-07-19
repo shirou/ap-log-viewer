@@ -118,12 +118,16 @@ Pushes to `main` deploy; other branches get a preview URL via
 `npx wrangler versions upload`. Node version comes from `.nvmrc` (22) — if a build
 log shows otherwise, set a `NODE_VERSION` build variable instead.
 
-Unmatched paths serve `public/404.html` (`not_found_handling: "404-page"`) rather
-than the SPA shell. There is no client-side router, so nothing needs an SPA
-fallback, and returning the shell would hand the browser HTML for a stale hashed
-chunk instead of a clean 404 — `wrangler.jsonc` documents the full comparison
-against `spaHandler`. Note the Go server has its own plain-text 404 and does not
-use this page; it only serves it as a static file.
+Unmatched paths serve `public/404.html` with a 404 (`not_found_handling:
+"404-page"`) rather than the SPA shell. There is no client-side router, so
+nothing needs an SPA fallback, and returning the shell would hand the browser
+HTML for a stale hashed chunk instead of a clean 404.
+
+`cmd/server` does the same thing, so the hosted site and the binary answer every
+path identically — verified request by request, down to the byte count. If a
+client-side router is ever added, both sides need the SPA fallback restored
+together: `not_found_handling` in `wrangler.jsonc` and `staticHandler` in
+`cmd/server/main.go`.
 
 Check the config or preview it locally without deploying:
 
