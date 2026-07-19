@@ -5,6 +5,7 @@ import { MapboxOverlay, type MapboxOverlayProps } from '@deck.gl/mapbox';
 import { IconLayer, PathLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { selectDisplayTime, useLogStore } from '../store/logStore.ts';
+import type { Waypoint } from '../model/log.ts';
 import { positionAt } from '../lib/series.ts';
 
 // Raster base maps (no API key required). OpenSeaMap is a transparent overlay.
@@ -62,6 +63,26 @@ const CURSOR_ICON = {
   mask: true,
 };
 
+// Mission overlay colours per theme. The deck.gl overlay is a separate canvas
+// that the dark-map filter never touches (see `.map-wrap.dark-map` in
+// index.css), so these have to read against light tiles and inverted-dark ones
+// alike. Violet keeps the plan clearly apart from the teal flown path, the
+// orange vehicle cursor and the red ruler; the light set is darker for the same
+// daylight-legibility reason as the plot palettes.
+const MISSION_STROKE = {
+  dark: [198, 140, 255] as [number, number, number],
+  light: [91, 33, 182] as [number, number, number],
+};
+// One chip colour for both themes: it carries white text, so it has to stay
+// dark either way and there is nothing left for a theme to vary.
+const MISSION_CHIP: [number, number, number, number] = [76, 29, 149, 235];
+
+// Above this many waypoints the sequence labels stop being drawn. Survey grids
+// run to several hundred points spaced a few pixels apart, and deck.gl does no
+// collision filtering — every chip would render, on top of the last, until the
+// route is a solid block. The markers alone stay readable at any count.
+const MISSION_LABEL_LIMIT = 60;
+
 function DeckGLOverlay(props: MapboxOverlayProps) {
   const overlay = useControl(() => new MapboxOverlay(props));
   overlay.setProps(props);
@@ -94,9 +115,13 @@ export default function MapView() {
   const theme = useLogStore((s) => s.theme);
 
   const traj = log?.trajectory;
+  const mission = log?.mission;
 
   const [base, setBase] = useState<BaseKey>('osm');
   const [seamark, setSeamark] = useState(false);
+  // Starts on, but the toggle only appears for logs that carry a plan, so this
+  // shows the mission straight away without adding a control to logs with none.
+  const [showMission, setShowMission] = useState(true);
   const [controlsOpen, setControlsOpen] = useState(true);
   const [measuring, setMeasuring] = useState(false);
   const [points, setPoints] = useState<[number, number][]>([]);
@@ -112,22 +137,25 @@ export default function MapView() {
   const mapStyle = useMemo(() => makeStyle(base, seamark), [base, seamark]);
 
   const initialViewState = useMemo(() => {
-    if (!traj || traj.lat.length === 0) {
-      return { longitude: 0, latitude: 20, zoom: 1.5 };
-    }
     let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
-    for (let i = 0; i < traj.lat.length; i++) {
-      minLat = Math.min(minLat, traj.lat[i]);
-      maxLat = Math.max(maxLat, traj.lat[i]);
-      minLon = Math.min(minLon, traj.lon[i]);
-      maxLon = Math.max(maxLon, traj.lon[i]);
-    }
+    const grow = (lat: number, lon: number) => {
+      minLat = Math.min(minLat, lat);
+      maxLat = Math.max(maxLat, lat);
+      minLon = Math.min(minLon, lon);
+      maxLon = Math.max(maxLon, lon);
+    };
+    if (traj) for (let i = 0; i < traj.lat.length; i++) grow(traj.lat[i], traj.lon[i]);
+    // Frame the plan only when there is no flown path to frame instead: a log
+    // that never got a GPS fix still has somewhere worth looking, but a normal
+    // flight shouldn't zoom out to cover a mission it never reached.
+    if (!Number.isFinite(minLat) && mission) for (const w of mission) grow(w.lat, w.lon);
+    if (!Number.isFinite(minLat)) return { longitude: 0, latitude: 20, zoom: 1.5 };
     return {
       longitude: (minLon + maxLon) / 2,
       latitude: (minLat + maxLat) / 2,
       zoom: spanToZoom(maxLon - minLon, maxLat - minLat),
     };
-  }, [traj]);
+  }, [traj, mission]);
 
   // Path layer is expensive (copies the whole trajectory); rebuild only on new data.
   const pathLayer = useMemo(() => {
@@ -167,6 +195,65 @@ export default function MapView() {
     });
   }, [traj, displayTime]);
 
+  // Mission layers: the planned route, a marker per waypoint, and its sequence
+  // number. Every size here is in pixels rather than metres, so the markers stay
+  // small as you zoom instead of growing with the ground they cover — which is
+  // what lets two waypoints a metre apart stay two visibly separate dots.
+  // Drawn *under* the trajectory, unlike the markers below. Where the vehicle
+  // flew the plan accurately the two lines coincide, and whichever is on top
+  // hides the other — so the plan yields, leaving the flown path and any
+  // departure from it visible, which is the comparison worth making.
+  const missionRouteLayer = useMemo(() => {
+    if (!showMission || !mission || mission.length < 2) return null;
+    const path = mission.map((w) => [w.lon, w.lat] as [number, number]);
+    return new PathLayer({
+      id: 'mission-path',
+      data: [{ path }],
+      getPath: (d: { path: [number, number][] }) => d.path,
+      getColor: [...MISSION_STROKE[theme], 200],
+      getWidth: 2,
+      widthUnits: 'pixels',
+      widthMinPixels: 2,
+      capRounded: true,
+      jointRounded: true,
+    });
+  }, [mission, showMission, theme]);
+
+  const missionMarkerLayers = useMemo(() => {
+    if (!showMission || !mission?.length) return [];
+    return [
+      new ScatterplotLayer({
+        id: 'mission-pts',
+        data: mission,
+        getPosition: (d: Waypoint) => [d.lon, d.lat],
+        getFillColor: [255, 255, 255],
+        getLineColor: MISSION_STROKE[theme],
+        // lineWidthUnits defaults to meters, which is the whole ballgame here:
+        // left alone, the outline is a 1 m ring that grows with zoom until it
+        // engulfs the marker — exactly where a metre-scale plan needs it least.
+        stroked: true,
+        getLineWidth: 1.5,
+        lineWidthUnits: 'pixels',
+        getRadius: 4,
+        radiusUnits: 'pixels',
+      }),
+      mission.length <= MISSION_LABEL_LIMIT &&
+        new TextLayer({
+          id: 'mission-labels',
+          data: mission,
+          getPosition: (d: Waypoint) => [d.lon, d.lat],
+          getText: (d: Waypoint) => String(d.seq),
+          getSize: 11,
+          getColor: [255, 255, 255],
+          // Offset up-right so the chip clears its own marker rather than hiding it.
+          getPixelOffset: [9, -10],
+          background: true,
+          getBackgroundColor: MISSION_CHIP,
+          backgroundPadding: [3, 1],
+        }),
+    ].filter(Boolean);
+  }, [mission, showMission, theme]);
+
   // Distance-ruler layers: line, draggable vertices, and cumulative labels.
   const measureLayers = useMemo(() => {
     if (points.length === 0) return [];
@@ -193,8 +280,11 @@ export default function MapView() {
         getPosition: (d: [number, number]) => d,
         getFillColor: [255, 255, 255],
         getLineColor: [255, 99, 99],
-        lineWidthMinPixels: 2,
+        // As above: without pixel units the ring is 1 m wide and balloons over
+        // the vertex as you zoom in, making it impossible to place precisely.
         stroked: true,
+        getLineWidth: 2,
+        lineWidthUnits: 'pixels',
         getRadius: 6,
         radiusUnits: 'pixels',
       }),
@@ -214,8 +304,11 @@ export default function MapView() {
   }, [points]);
 
   const layers = useMemo(
-    () => [pathLayer, cursorLayer, ...measureLayers].filter(Boolean),
-    [pathLayer, cursorLayer, measureLayers],
+    () =>
+      [missionRouteLayer, pathLayer, ...missionMarkerLayers, cursorLayer, ...measureLayers].filter(
+        Boolean,
+      ),
+    [missionRouteLayer, pathLayer, missionMarkerLayers, cursorLayer, measureLayers],
   );
 
   const totalDist = useMemo(() => {
@@ -336,7 +429,11 @@ export default function MapView() {
           title={controlsOpen ? 'Collapse' : 'Expand'}
           aria-expanded={controlsOpen}
         >
-          <span>🗺 Layers{measuring && !controlsOpen ? ' · 📏' : ''}</span>
+          <span>
+            🗺 Layers
+            {!controlsOpen && showMission && !!mission?.length ? ' · 📍' : ''}
+            {!controlsOpen && measuring ? ' · 📏' : ''}
+          </span>
           <span className="chevron">{controlsOpen ? '▾' : '▸'}</span>
         </button>
         {controlsOpen && (
@@ -359,6 +456,16 @@ export default function MapView() {
               />
               Nautical chart (OpenSeaMap)
             </label>
+            {!!mission?.length && (
+              <label title="Show the uploaded flight plan (mission waypoints)">
+                <input
+                  type="checkbox"
+                  checked={showMission}
+                  onChange={(e) => setShowMission(e.target.checked)}
+                />
+                Mission waypoints <span className="count">({mission.length})</span>
+              </label>
+            )}
             <button
               className={measuring ? 'primary' : ''}
               onClick={() => {
@@ -393,7 +500,12 @@ export default function MapView() {
       </div>
 
       {traj && traj.lat.length === 0 && (
-        <div className="legend">This log has no position data (GPS/POS)</div>
+        <div className="legend">
+          This log has no position data (GPS/POS)
+          {/* The plan is still drawn and framed in this case, so say so rather
+              than let the map read as empty next to a route the user can see. */}
+          {mission?.length ? ' — showing the mission only' : ''}
+        </div>
       )}
     </div>
   );
