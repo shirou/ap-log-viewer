@@ -562,10 +562,14 @@ export default function MapView() {
                 {missionFile && <button onClick={clearMissionFile}>Remove</button>}
               </div>
               {missionFile && missionFile.unreadable > 0 && (
+                // Deliberately not naming a cause. The count covers structure
+                // scans and landing patterns, which the file describes as
+                // geometry, but also an empty transect list and any item whose
+                // coordinates would not read — so any specific reason given
+                // here would be wrong for some of what it is counting.
                 <div className="plot-hint">
-                  {missionFile.unreadable} item{missionFile.unreadable > 1 ? 's' : ''} not drawn — a
-                  structure scan or landing pattern, which the file stores as geometry rather than
-                  as waypoints.
+                  {missionFile.unreadable} item{missionFile.unreadable > 1 ? 's' : ''} not drawn —
+                  the file has no usable waypoints for {missionFile.unreadable > 1 ? 'them' : 'it'}.
                 </div>
               )}
               {missionFileError && <div className="mission-file-error">{missionFileError}</div>}

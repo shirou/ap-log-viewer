@@ -40,8 +40,9 @@ only a convenience.
 A loaded plan overrides the one in the log, and the map moves to it (and back to
 the flight when it is removed). QGC surveys and corridor scans store their
 generated waypoints, so they are drawn in full. Structure scans and landing
-patterns instead store the geometry QGC regenerates them from; those are counted
-and reported on the map panel rather than silently dropped.
+patterns instead store the geometry QGC regenerates them from, and so cannot be.
+Anything the file holds no usable waypoints for is counted and reported on the
+map panel rather than silently dropped.
 
 ## Stack
 
