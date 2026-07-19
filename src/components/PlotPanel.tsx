@@ -188,12 +188,22 @@ export default function PlotPanel() {
       tooltip.innerHTML = `<div class="tt-time">${fmtVal(t)}s</div>${rows}`;
       tooltip.style.display = 'block';
       // Place near the cursor, flipping left/up when close to the edges.
+      //
+      // `left`/`top` are measured from the corner of .u-over, which the axes
+      // inset, while the tooltip is positioned from the corner of .plot-area.
+      // The plot rect's own offset has to be added back or the tooltip is drawn
+      // roughly an axis-width up and to the left of the cursor it describes.
+      // bbox is in canvas pixels, so scale it by the ratio uPlot itself used.
       const tw = tooltip.offsetWidth;
       const th = tooltip.offsetHeight;
-      let x = left + 14;
-      let y = top + 14;
-      if (x + tw > u.bbox.width / devicePixelRatio) x = left - tw - 14;
-      if (y + th > u.bbox.height / devicePixelRatio) y = top - th - 14;
+      const ox = u.bbox.left / uPlot.pxRatio;
+      const oy = u.bbox.top / uPlot.pxRatio;
+      let x = ox + left + 14;
+      let y = oy + top + 14;
+      // Flip against the box that actually clips the tooltip rather than the
+      // plot rect, so it only moves out of the way when it would be cut off.
+      if (x + tw > el.clientWidth) x = ox + left - tw - 14;
+      if (y + th > el.clientHeight) y = oy + top - th - 14;
       tooltip.style.transform = `translate(${Math.max(0, x)}px, ${Math.max(0, y)}px)`;
     };
 
