@@ -1,6 +1,26 @@
 import { useMemo, useState } from 'react';
 import { useLogStore } from '../store/logStore.ts';
 import { fieldKey } from '../model/log.ts';
+import { parseQuery, searchMessages } from '../lib/fieldSearch.ts';
+
+/**
+ * `text` with the first occurrence of `term` marked.
+ *
+ * Message and field names come verbatim out of the log file's own format
+ * records, so they are attacker-controlled; rendering them as React text nodes
+ * escapes them. Never reach for dangerouslySetInnerHTML here.
+ */
+function Highlight({ text, term }: { text: string; term: string }) {
+  const i = term ? text.toLowerCase().indexOf(term) : -1;
+  if (i < 0) return <>{text}</>;
+  return (
+    <>
+      {text.slice(0, i)}
+      <mark>{text.slice(i, i + term.length)}</mark>
+      {text.slice(i + term.length)}
+    </>
+  );
+}
 
 export default function FieldTree() {
   const log = useLogStore((s) => s.log);
@@ -8,19 +28,19 @@ export default function FieldTree() {
   const toggleField = useLogStore((s) => s.toggleField);
   const purgeMessage = useLogStore((s) => s.purgeMessage);
   const purgeUnselected = useLogStore((s) => s.purgeUnselected);
-  const [open, setOpen] = useState<Record<string, boolean>>({});
   const [filter, setFilter] = useState('');
+  // Two maps rather than one, because a search opens messages on its own: a
+  // single map would carry "I collapsed this" across to the next query, where
+  // the message would come back collapsed on top of a hit for no visible
+  // reason. The search map is dropped whenever the term changes, so browsing
+  // expansions survive a search and search expansions do not outlive it.
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [searchOpen, setSearchOpen] = useState<Record<string, boolean>>({});
 
   const selected = useMemo(() => new Set(selectedFields.map(fieldKey)), [selectedFields]);
 
-  const messages = useMemo(() => {
-    if (!log) return [];
-    const list = Object.values(log.messages).filter((m) => Object.keys(m.fields).length > 0);
-    list.sort((a, b) => a.name.localeCompare(b.name));
-    if (!filter) return list;
-    const f = filter.toLowerCase();
-    return list.filter((m) => m.name.toLowerCase().includes(f));
-  }, [log, filter]);
+  const query = useMemo(() => parseQuery(filter), [filter]);
+  const messages = useMemo(() => (log ? searchMessages(log.messages, filter) : []), [log, filter]);
 
   if (!log) return null;
 
@@ -33,9 +53,12 @@ export default function FieldTree() {
     <div>
       <input
         className="search"
-        placeholder="Search messages…"
+        placeholder="Search messages & fields (e.g. GPS.cog)"
         value={filter}
-        onChange={(e) => setFilter(e.target.value)}
+        onChange={(e) => {
+          setFilter(e.target.value);
+          setSearchOpen({});
+        }}
       />
       <div className="tree-toolbar">
         <span className="count">{total} types</span>
@@ -49,14 +72,15 @@ export default function FieldTree() {
           Remove unselected ({purgeableCount})
         </button>
       </div>
-      {messages.map((m) => {
-        const fields = Object.keys(m.fields).filter((f) => f !== 'TimeUS');
-        const isOpen = open[m.name] ?? false;
+      {messages.map(({ series: m, fields, hits, autoExpand }) => {
+        // A message the search opened starts open, but the row still toggles.
+        const isOpen = query ? (searchOpen[m.name] ?? autoExpand) : (open[m.name] ?? false);
+        const setIsOpen = query ? setSearchOpen : setOpen;
         return (
           <div className="tree-msg" key={m.name}>
-            <div className="tree-row" onClick={() => setOpen((o) => ({ ...o, [m.name]: !isOpen }))}>
+            <div className="tree-row" onClick={() => setIsOpen((o) => ({ ...o, [m.name]: !isOpen }))}>
               <span>
-                {isOpen ? '▾' : '▸'} {m.name}
+                {isOpen ? '▾' : '▸'} <Highlight text={m.name} term={query?.message ?? ''} />
               </span>
               <span className="row-right">
                 <span className="count">{m.time.length.toLocaleString()}</span>
@@ -83,7 +107,10 @@ export default function FieldTree() {
                     onClick={() => toggleField({ message: m.name, field: f })}
                   >
                     <input type="checkbox" readOnly checked={isSel} />
-                    {f}
+                    {/* The row is a flex container, so the name needs its own
+                        box — otherwise <mark> becomes a sibling flex item and
+                        the gap splits the word ("G | Crs"). */}
+                    <span>{hits.has(f) ? <Highlight text={f} term={query?.field ?? ''} /> : f}</span>
                   </div>
                 );
               })}
