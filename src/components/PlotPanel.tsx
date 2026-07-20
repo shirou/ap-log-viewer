@@ -4,6 +4,7 @@ import 'uplot/dist/uPlot.min.css';
 import { selectDisplayTime, useLogStore } from '../store/logStore.ts';
 import { fieldKey, type FieldRef, type LogData } from '../model/log.ts';
 import { assignAxes, extentOf, type AxisAssignment, type AxisSide, type Col } from '../lib/axisGroups.ts';
+import { nearestSampleIndex } from '../lib/series.ts';
 
 // Series colours per theme. The light set is darker/more saturated so the lines
 // keep enough contrast against a white plot in daylight.
@@ -29,9 +30,37 @@ function fmtVal(v: number | null | undefined): string {
   return Math.abs(v) >= 1000 || Number.isInteger(v) ? String(v) : v.toFixed(3).replace(/\.?0+$/, '');
 }
 
+/**
+ * One series as its own message logged it, before the merge onto a common x.
+ *
+ * Kept alongside the merged columns because those columns are null wherever the
+ * series' message did not sample, and the tooltip has to answer for an instant
+ * that almost always belongs to some other message. Both arrays are the log's
+ * own, held by reference — no copy.
+ */
+interface Samples {
+  /** Raw timestamps, the same domain as `Merged.times`. */
+  time: Float64Array;
+  values: Float64Array;
+}
+
 interface Merged {
   data: uPlot.AlignedData;
   labels: string[];
+  /** Raw timestamps behind `data[0]`, which holds seconds since log start. */
+  times: Float64Array;
+  /** One entry per `labels` entry. */
+  samples: Samples[];
+  /**
+   * True when every series was already on one time array, so no merge happened
+   * and an x index addresses all of them directly.
+   *
+   * Worth knowing because a timestamp does not identify a sample there: a
+   * message with no time column inherits the last one seen, so several of its
+   * samples can share a stamp, and a search would answer with the last of the
+   * run whichever one the cursor is on.
+   */
+  sharedTime: boolean;
 }
 
 interface Built extends Merged {
@@ -62,9 +91,12 @@ function buildData(log: LogData, fields: FieldRef[]): Merged {
     })
     .filter((s): s is { ref: FieldRef; time: Float64Array; values: Float64Array } => s !== null);
 
-  if (series.length === 0) return { data: [new Float64Array(0)], labels: [] };
+  if (series.length === 0) {
+    return { data: [new Float64Array(0)], labels: [], times: new Float64Array(0), samples: [], sharedTime: true };
+  }
 
   const labelsOf = () => series.map((s) => fieldKey(s.ref));
+  const samplesOf = () => series.map((s) => ({ time: s.time, values: s.values }));
 
   // Fast path: when every selected field comes from the same message they share
   // one time array, so no merge is needed. This also preserves samples that
@@ -74,7 +106,13 @@ function buildData(log: LogData, fields: FieldRef[]): Merged {
     const xs = new Float64Array(t0.length);
     for (let i = 0; i < t0.length; i++) xs[i] = (t0[i] - log.startTime) / 1e6;
     const data: (Float64Array | (number | null)[])[] = [xs, ...series.map((s) => s.values)];
-    return { data: data as unknown as uPlot.AlignedData, labels: labelsOf() };
+    return {
+      data: data as unknown as uPlot.AlignedData,
+      labels: labelsOf(),
+      times: t0,
+      samples: samplesOf(),
+      sharedTime: true,
+    };
   }
 
   // Union of all timestamps.
@@ -109,7 +147,13 @@ function buildData(log: LogData, fields: FieldRef[]): Merged {
     data.push(col);
     labels.push(fieldKey(s.ref));
   }
-  return { data: data as unknown as uPlot.AlignedData, labels };
+  return {
+    data: data as unknown as uPlot.AlignedData,
+    labels,
+    times: Float64Array.from(merged),
+    samples: samplesOf(),
+    sharedTime: false,
+  };
 }
 
 export default function PlotPanel() {
@@ -183,6 +227,9 @@ export default function PlotPanel() {
       if (idx == null || left < 0 || top < 0) return;
       const xs = u.data[0];
       const t = xs[idx] as number;
+      // The instant to report every series at. uPlot's idx points into the
+      // merged x, whose timestamps are the union of the selected messages'.
+      const rawT = built.times[idx];
       // Built as nodes rather than an HTML string. Series labels are message
       // and column names copied verbatim out of the log's own FMT records
       // (src/parsers/dataflash.ts), so a crafted file can put anything it likes
@@ -198,7 +245,19 @@ export default function PlotPanel() {
         // With two scales the same pixel height means different things per row,
         // so say which axis each value was read against.
         if (built.axes.split) row.append(span('tt-axis', GLYPH[built.axes.side[i]]));
-        row.append(span('tt-label', label), span('tt-val', fmtVal(u.data[i + 1]?.[idx])));
+        // Read from the series' own samples rather than from its merged column.
+        // That column is null at every timestamp the series' message did not
+        // log, which is most of them once two messages are on screen, so
+        // reading it left every row blank but the one series whose sample the
+        // cursor had landed on. The axis split separates series by range, which
+        // in practice means by message, which is why the blanks came out
+        // looking like one whole side of the plot.
+        //
+        // Unmerged, the cursor's index already is the sample index — see
+        // `sharedTime` for why the search must not be used there.
+        const s = built.samples[i];
+        const j = built.sharedTime ? idx : nearestSampleIndex(s.time, rawT);
+        row.append(span('tt-label', label), span('tt-val', fmtVal(j == null ? null : s.values[j])));
         tooltip.append(row);
       });
       tooltip.style.display = 'block';
