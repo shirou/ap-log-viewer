@@ -15,6 +15,38 @@ export function searchSortedLE(times: ArrayLike<number>, t: number): number {
   return hi;
 }
 
+/**
+ * Index of the sample nearest `t`, or null when `t` falls outside the series.
+ *
+ * Outside means before the first sample or after the last, where the plot draws
+ * no line at all — answering with the nearest end there would report a value the
+ * series never held at that instant.
+ *
+ * Nearest, rather than the last-at-or-before that searchSortedLE gives the
+ * views that replay state: this answers "what does this curve read here", where
+ * the closer of the two samples the line is drawn between is the better answer,
+ * and it halves the worst-case error. Playback cannot use it — a playhead must
+ * not show a sample from the future — but a reader pointing at a curve can.
+ *
+ * The distinction only matters because an exact hit is the exception: series in
+ * one plot usually come from different messages logged at different rates, so
+ * insisting on `t` itself is how a reader ends up with a row that is blank
+ * everywhere except on its own message's samples.
+ *
+ * Ties go to the earlier sample. Note that a run of samples sharing a timestamp
+ * is not resolvable here — the answer is the last of the run — so a caller that
+ * can address such samples by index should do that instead.
+ */
+export function nearestSampleIndex(times: ArrayLike<number>, t: number): number | null {
+  const n = times.length;
+  // The bounds test also covers the empty case, so searchSortedLE's -1 for an
+  // empty array is unreachable below.
+  if (n === 0 || t < times[0] || t > times[n - 1]) return null;
+  const i = searchSortedLE(times, t);
+  // searchSortedLE lands on or before t; the sample after it may be closer.
+  return i + 1 < n && times[i + 1] - t < t - times[i] ? i + 1 : i;
+}
+
 export interface LatLngAlt {
   lat: number;
   lon: number;
