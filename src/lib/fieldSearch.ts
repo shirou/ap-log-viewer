@@ -61,8 +61,13 @@ export interface MessageMatch {
   series: MessageSeries;
   /** Field names to render, always without `TimeUS`. */
   fields: string[];
-  /** The subset of `fields` the query matched, for highlighting. */
-  hits: Set<string>;
+  /**
+   * The subset of `fields` the query matched, for highlighting.
+   *
+   * Readonly because unmatched rows all share one empty set; adding to it
+   * through a match would light up every other row that borrowed it.
+   */
+  hits: ReadonlySet<string>;
   /** Whether the message should start expanded. */
   autoExpand: boolean;
 }
@@ -81,7 +86,7 @@ export function searchMessages(messages: Record<string, MessageSeries>, raw: str
     if (fields.length === 0) continue;
 
     if (!q) {
-      out.push({ series, fields, hits: NO_HITS as Set<string>, autoExpand: false });
+      out.push({ series, fields, hits: NO_HITS, autoExpand: false });
       continue;
     }
 
@@ -90,9 +95,9 @@ export function searchMessages(messages: Record<string, MessageSeries>, raw: str
     // half is considered, so `gps.cog` cannot pull in a cog from elsewhere.
     if (q.dotted && !nameHit) continue;
 
-    const hits = q.field
+    const hits: ReadonlySet<string> = q.field
       ? new Set(fields.filter((f) => f.toLowerCase().includes(q.field)))
-      : (NO_HITS as Set<string>);
+      : NO_HITS;
     if (!nameHit && hits.size === 0) continue;
     if (q.dotted && q.field && hits.size === 0) continue;
 
