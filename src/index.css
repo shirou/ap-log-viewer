@@ -10,6 +10,10 @@
   --accent-2: #f6ad55;
   /* Text drawn on top of an --accent fill (e.g. primary buttons). */
   --accent-ink: #06201d;
+  /* Search-match highlight. The browser default (black on yellow) is unusable
+     on a dark panel, so both halves are always set explicitly. */
+  --hl-bg: #f6ad55;
+  --hl-ink: #1a1206;
   /* Translucent panel for controls floating over the map. */
   --overlay-bg: rgba(14, 17, 22, 0.85);
   /* Plot chrome (uPlot reads these via getComputedStyle). */
@@ -34,6 +38,10 @@
   --accent: #0a6e66;
   --accent-2: #b45309;
   --accent-ink: #ffffff;
+  /* Saturated enough to pick out at a glance in direct sunlight, and dark
+     enough text on it to stay legible when the screen is washed out. */
+  --hl-bg: #ffd43b;
+  --hl-ink: #0b1015;
   --overlay-bg: rgba(255, 255, 255, 0.92);
   --plot-axis: #3f4854;
   --plot-grid: #aeb9c6;
@@ -539,6 +547,12 @@ input[type="text"] {
 }
 .tree-field.selected {
   color: var(--accent);
+}
+.tree-msg mark {
+  background: var(--hl-bg);
+  color: var(--hl-ink);
+  border-radius: 2px;
+  padding: 0 1px;
 }
 .count {
   color: var(--muted);
