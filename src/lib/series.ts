@@ -47,6 +47,28 @@ export function nearestSampleIndex(times: ArrayLike<number>, t: number): number 
   return i + 1 < n && times[i + 1] - t < t - times[i] ? i + 1 : i;
 }
 
+/**
+ * Half-open sample index range [i0, i1) whose timestamps fall within [t0, t1].
+ *
+ * i0 is the first sample at or after t0; i1 is one past the last sample at or
+ * before t1. A window that lands entirely outside the series, between two
+ * samples, or is inverted returns [0, 0] — an empty range every caller can slice
+ * without a special case. Times are microseconds, the same domain as the model.
+ */
+export function rangeIndices(time: ArrayLike<number>, t0: number, t1: number): [number, number] {
+  const n = time.length;
+  if (n === 0 || t1 < t0 || t0 > time[n - 1] || t1 < time[0]) return [0, 0];
+  // searchSortedLE lands at-or-before; step to the first sample at-or-after t0.
+  // When t0 hits a run of equal timestamps it lands on the *last* of the run, so
+  // back up over the leading duplicates — a message with no time column inherits
+  // the last stamp seen, making such runs real (see nearestSampleIndex).
+  let i0 = searchSortedLE(time, t0);
+  if (time[i0] < t0) i0++;
+  else while (i0 > 0 && time[i0 - 1] === t0) i0--;
+  const i1 = searchSortedLE(time, t1) + 1; // exclusive: one past the last at-or-before
+  return i0 < i1 ? [i0, i1] : [0, 0];
+}
+
 export interface LatLngAlt {
   lat: number;
   lon: number;

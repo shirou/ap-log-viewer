@@ -759,3 +759,234 @@ input[type="text"] {
   background: var(--plot-select);
   border: 1px solid var(--plot-select-border);
 }
+
+/* ---- Analysis workbench (modal) ---- */
+.analysis-modal {
+  width: min(1100px, 95vw);
+  height: 90vh;
+  max-width: 95vw;
+  max-height: 90vh;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  overflow: hidden;
+}
+.analysis-modal::backdrop {
+  background: var(--overlay-bg);
+}
+.analysis-inner {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.analysis-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.analysis-head h2 {
+  font-size: 15px;
+  margin: 0;
+}
+.analysis-sub {
+  color: var(--muted);
+  font-size: 12px;
+}
+.analysis-head .spacer {
+  flex: 1;
+}
+.analysis-close {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  cursor: pointer;
+}
+.analysis-close:hover {
+  color: var(--text);
+}
+
+.interval-controls {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.interval-brush-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+.interval-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.interval-row label {
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.interval-row input {
+  width: 74px;
+  padding: 2px 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.interval-dur {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.analysis-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border);
+}
+.analysis-tabs button {
+  padding: 8px 14px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.analysis-tabs button.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.analysis-tabs button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.analysis-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
+}
+.analysis-hint {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 6px 0;
+}
+.analysis-note {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 14px;
+  line-height: 1.5;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.analysis-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.analysis-controls label,
+.compass-mot select {
+  color: var(--muted);
+  font-size: 12px;
+}
+.analysis-controls select,
+.compass-mot select {
+  margin-left: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 2px 6px;
+}
+.analysis-table th {
+  text-align: right;
+  padding: 3px 10px;
+  color: var(--muted);
+  font-weight: 500;
+  border-bottom: 1px solid var(--border);
+}
+.analysis-table th:first-child {
+  text-align: left;
+}
+.analysis-table td {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.analysis-table td.k {
+  text-align: left;
+}
+
+.mag-scatter {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+.mag-scatter canvas {
+  display: block;
+}
+
+.compass-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 260px;
+  gap: 16px;
+  align-items: start;
+}
+.readout-headline {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 10px;
+}
+.readout-big {
+  font-size: 30px;
+  font-weight: 600;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.readout-cap {
+  font-size: 11px;
+  color: var(--muted);
+}
+.analysis-readout dl {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 3px 12px;
+  margin: 0;
+  font-size: 12px;
+}
+.analysis-readout dt {
+  color: var(--muted);
+}
+.analysis-readout dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.readout-warn {
+  color: var(--accent-2);
+}
+.compass-mot {
+  margin-top: 18px;
+}
+.compass-mot h3 {
+  font-size: 13px;
+  margin: 0 0 4px;
+}
+
+@media (max-width: 768px) {
+  .compass-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
