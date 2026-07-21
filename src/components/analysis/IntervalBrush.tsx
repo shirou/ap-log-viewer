@@ -75,8 +75,10 @@ export default function IntervalBrush({ time, values, startTime, theme, range, o
           setSelect: [
             (u: uPlot) => {
               if (u.select.width <= 0) return;
-              const t0 = startTime + u.posToVal(u.select.left, 'x') * 1e6;
-              const t1 = startTime + u.posToVal(u.select.left + u.select.width, 'x') * 1e6;
+              // Round to integer µs: log timestamps are integers, and a fractional
+              // bound just above one would exclude that boundary sample.
+              const t0 = Math.round(startTime + u.posToVal(u.select.left, 'x') * 1e6);
+              const t1 = Math.round(startTime + u.posToVal(u.select.left + u.select.width, 'x') * 1e6);
               onChangeRef.current([Math.min(t0, t1), Math.max(t0, t1)]);
             },
           ],

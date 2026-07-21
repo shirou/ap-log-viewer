@@ -73,7 +73,9 @@ export default function AnalysisModal({ onClose }: { onClose: () => void }) {
   const setBound = (which: 0 | 1, secStr: string) => {
     const sec = parseFloat(secStr);
     if (!Number.isFinite(sec)) return;
-    const us = Math.max(log.startTime, Math.min(log.endTime, log.startTime + sec * 1e6));
+    // Round to integer µs so a value like 0.1s doesn't land a fraction off an
+    // integer timestamp and drop a boundary sample when slicing.
+    const us = Math.max(log.startTime, Math.min(log.endTime, Math.round(log.startTime + sec * 1e6)));
     const cur = range ?? [log.startTime, log.endTime];
     const next: [number, number] = which === 0 ? [us, cur[1]] : [cur[0], us];
     setRange([Math.min(next[0], next[1]), Math.max(next[0], next[1])]);
@@ -132,14 +134,14 @@ export default function AnalysisModal({ onClose }: { onClose: () => void }) {
           <p className="analysis-hint">No plottable data to select an interval from.</p>
         )}
 
-        <div className="analysis-tabs" role="tablist" aria-label="Analysis modules">
+        {/* A button group, not an ARIA tablist: only the active module is mounted
+            in one swapped panel, which the tab/tabpanel contract (one panel per
+            tab) doesn't fit. aria-pressed conveys the active module instead. */}
+        <div className="analysis-tabs" role="group" aria-label="Analysis modules">
           {modules.map((m) => (
             <button
               key={m.id}
-              role="tab"
-              id={`analysis-tab-${m.id}`}
-              aria-selected={tab === m.id}
-              aria-controls="analysis-panel"
+              aria-pressed={tab === m.id}
               disabled={!m.available}
               className={tab === m.id ? 'active' : ''}
               onClick={() => setTab(m.id)}
@@ -149,7 +151,7 @@ export default function AnalysisModal({ onClose }: { onClose: () => void }) {
           ))}
         </div>
 
-        <div className="analysis-body" id="analysis-panel" role="tabpanel" aria-labelledby={`analysis-tab-${tab}`} tabIndex={0}>
+        <div className="analysis-body">
           {tab === 'stats' && <WindowStatsTable range={range} extraFields={magFields} />}
           {tab === 'compass' && magSources.length > 0 && <CompassAnalysis range={range} />}
         </div>
