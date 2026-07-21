@@ -955,6 +955,15 @@ input[type="text"] {
   color: var(--accent);
   font-variant-numeric: tabular-nums;
 }
+.readout-unit {
+  font-size: 0.55em;
+  /* Deliberately not the headline's 600: the UI stack resolves to Segoe UI,
+     whose semibold face carries no Greek, so Chrome substitutes a different
+     typeface for a glyph like Ω and it lands mid-number looking foreign.
+     At normal weight the same stack renders it from Segoe UI itself. */
+  font-weight: 400;
+  margin-left: 3px;
+}
 .readout-cap {
   font-size: 11px;
   color: var(--muted);
@@ -1054,6 +1063,23 @@ input[type="text"] {
   border-radius: 6px;
   background: var(--bg);
   margin-bottom: 12px;
+  /* uPlot renders anything it hangs below the canvas — a legend, an axis it
+     could not fit — outside the height it was given. Clipped here so it can
+     never land on the readouts, as .plot-wrap does for the main plot. */
+  overflow: hidden;
+}
+.tracking-legend {
+  display: inline-flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.tracking-legend i {
+  display: inline-block;
+  width: 12px;
+  height: 2px;
+  vertical-align: middle;
+  margin-right: 4px;
 }
 .tracking-grid {
   display: grid;
