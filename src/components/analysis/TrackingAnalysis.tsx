@@ -114,7 +114,11 @@ export default function TrackingAnalysis({ range }: Props) {
       ] as unknown as uPlot.AlignedData,
       options: {
         scales: { x: { time: false } },
-        legend: { show: true },
+        // uPlot hangs its legend below .u-wrap, which `height` has already
+        // filled, so it lands outside the box and over whatever follows. The
+        // swatches below the controls name the two series instead — the same
+        // trade PlotPanel makes with its chips.
+        legend: { show: false },
         cursor: { drag: { x: false, y: false } },
         axes: [
           {
@@ -156,6 +160,14 @@ export default function TrackingAnalysis({ range }: Props) {
         </label>
         <span className="analysis-hint">
           {pair.desired.message}.{pair.desired.field} vs {pair.actual.message}.{pair.actual.field}
+        </span>
+        <span className="tracking-legend">
+          <span>
+            <i style={{ background: palette[0] }} /> desired
+          </span>
+          <span>
+            <i style={{ background: palette[1] }} /> achieved
+          </span>
         </span>
       </div>
 

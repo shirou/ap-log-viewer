@@ -172,7 +172,10 @@ export default function ScatterFitAnalysis({ range }: Props) {
               <>
                 {Number.isFinite(resistance) && (
                   <div className="readout-headline">
-                    <span className="readout-big">{fmtNum(resistance, 1)} mΩ</span>
+                    <span className="readout-big">
+                      {fmtNum(resistance, 1)}
+                      <span className="readout-unit">mΩ</span>
+                    </span>
                     <span className="readout-cap">internal resistance (−slope)</span>
                   </div>
                 )}
