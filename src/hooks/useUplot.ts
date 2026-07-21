@@ -33,7 +33,16 @@ export function useUplot(
     const { options, data } = build(width, height);
     const u = new uPlot({ ...options, width, height }, data, el);
     plotRef.current = u;
-    const ro = new ResizeObserver(() => u.setSize({ width: el.clientWidth || width, height: el.clientHeight || height }));
+    const ro = new ResizeObserver(() => {
+      // A zero is never propagated: a panel that is momentarily unmeasurable
+      // would otherwise collapse the plot to nothing, and resizing it back is
+      // not something the observer will be asked to do again. The old fallback
+      // to the creation-time size had the same effect more quietly, pinning the
+      // plot to a stale width.
+      const w = el.clientWidth;
+      const h = el.clientHeight;
+      if (w > 0 && h > 0) u.setSize({ width: w, height: h });
+    });
     ro.observe(el);
     return () => {
       ro.disconnect();
