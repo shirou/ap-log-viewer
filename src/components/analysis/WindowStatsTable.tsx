@@ -4,17 +4,12 @@ import { getColumn } from '../../lib/signal.ts';
 import { columnStats } from '../../lib/stats.ts';
 import { rangeIndices } from '../../lib/series.ts';
 import { fieldKey, type FieldRef } from '../../model/log.ts';
+import { fmtAuto } from '../../lib/format.ts';
 
 interface Props {
   range: [number, number] | null;
   /** Extra fields to include beyond the plotted selection (e.g. the mag triple). */
   extraFields: FieldRef[];
-}
-
-function fmt(v: number): string {
-  if (!Number.isFinite(v)) return '—';
-  if (Math.abs(v) >= 1000 || Number.isInteger(v)) return v.toFixed(0);
-  return v.toPrecision(4);
 }
 
 /**
@@ -78,11 +73,11 @@ export default function WindowStatsTable({ range, extraFields }: Props) {
                 {stats ? (
                   <>
                     <td>{stats.count}</td>
-                    <td>{fmt(stats.mean)}</td>
-                    <td>{fmt(stats.min)}</td>
-                    <td>{fmt(stats.max)}</td>
-                    <td>{fmt(stats.std)}</td>
-                    <td>{fmt(stats.rms)}</td>
+                    <td>{fmtAuto(stats.mean)}</td>
+                    <td>{fmtAuto(stats.min)}</td>
+                    <td>{fmtAuto(stats.max)}</td>
+                    <td>{fmtAuto(stats.std)}</td>
+                    <td>{fmtAuto(stats.rms)}</td>
                     <td>{Number.isFinite(stats.cv) ? (stats.cv * 100).toFixed(1) : '—'}</td>
                   </>
                 ) : (

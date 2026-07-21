@@ -5,6 +5,7 @@ import { getColumn, resampleLinear } from '../../lib/signal.ts';
 import { fitCircle } from '../../lib/circleFit.ts';
 import { columnStats, linearFit } from '../../lib/stats.ts';
 import { rangeIndices } from '../../lib/series.ts';
+import { fmtNum } from '../../lib/format.ts';
 import ScatterCanvas from './ScatterCanvas.tsx';
 
 interface Props {
@@ -12,11 +13,6 @@ interface Props {
 }
 
 const EMPTY = new Float64Array(0);
-
-function num(v: number, digits = 0): string {
-  if (!Number.isFinite(v)) return '—';
-  return v.toFixed(digits);
-}
 
 /**
  * Magnetometer hard-iron diagnostic: fit a circle to the x-y locus over the
@@ -118,26 +114,26 @@ export default function CompassAnalysis({ range }: Props) {
           {fit && fit.ok ? (
             <>
               <div className="readout-headline">
-                <span className="readout-big">{num(fit.headingErrorDeg, 1)}°</span>
+                <span className="readout-big">{fmtNum(fit.headingErrorDeg, 1)}°</span>
                 <span className="readout-cap">worst-case heading error</span>
               </div>
               <dl>
                 <dt>center (cx, cy)</dt>
                 <dd>
-                  {num(fit.cx)}, {num(fit.cy)}
+                  {fmtNum(fit.cx)}, {fmtNum(fit.cy)}
                 </dd>
                 <dt>radius R</dt>
-                <dd>{num(fit.R)}</dd>
+                <dd>{fmtNum(fit.R)}</dd>
                 <dt>residual offset d</dt>
-                <dd>{num(fit.d)}</dd>
+                <dd>{fmtNum(fit.d)}</dd>
                 <dt>d / R</dt>
                 <dd>{(fit.dOverR * 100).toFixed(1)}%</dd>
                 <dt>radial σ</dt>
                 <dd>
-                  {num(fit.radialStddev, 1)} ({((fit.radialStddev / fit.R) * 100).toFixed(1)}% of R)
+                  {fmtNum(fit.radialStddev, 1)} ({((fit.radialStddev / fit.R) * 100).toFixed(1)}% of R)
                 </dd>
                 <dt>arc coverage</dt>
-                <dd className={fit.arcCoverageDeg < 270 ? 'readout-warn' : ''}>{num(fit.arcCoverageDeg)}°</dd>
+                <dd className={fit.arcCoverageDeg < 270 ? 'readout-warn' : ''}>{fmtNum(fit.arcCoverageDeg)}°</dd>
                 <dt>samples</dt>
                 <dd>{fit.sampleCount}</dd>
               </dl>
@@ -162,7 +158,7 @@ export default function CompassAnalysis({ range }: Props) {
         {magStats ? (
           <>
             <p className="analysis-hint">
-              |B| mean {num(magStats.mean)} · CV {Number.isFinite(magStats.cv) ? (magStats.cv * 100).toFixed(1) : '—'}% (a
+              |B| mean {fmtNum(magStats.mean)} · CV {Number.isFinite(magStats.cv) ? (magStats.cv * 100).toFixed(1) : '—'}% (a
               good compass keeps |B| nearly constant; rising |B| with current means motor interference).
             </p>
             {motor ? (
@@ -177,7 +173,7 @@ export default function CompassAnalysis({ range }: Props) {
                   height={260}
                 />
                 <p className="analysis-hint">
-                  slope {num(motor.fit.slope, 3)} |B|/{motor.driver.unit || motor.driver.kind} · r{' '}
+                  slope {fmtNum(motor.fit.slope, 3)} |B|/{motor.driver.unit || motor.driver.kind} · r{' '}
                   {Number.isFinite(motor.fit.r) ? motor.fit.r.toFixed(2) : '—'}
                   {driverSources.length > 1 && (
                     <select value={driverIdx} onChange={(e) => setDriverIdx(Number(e.target.value))}>

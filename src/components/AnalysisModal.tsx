@@ -1,13 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLogStore } from '../store/logStore.ts';
-import { detectMagSources } from '../lib/analysisSources.ts';
+import { detectActuatorSources, detectMagSources, detectTrackingPairs } from '../lib/analysisSources.ts';
 import { getColumn } from '../lib/signal.ts';
 import { fieldKey, type FieldRef } from '../model/log.ts';
 import IntervalBrush from './analysis/IntervalBrush.tsx';
 import WindowStatsTable from './analysis/WindowStatsTable.tsx';
 import CompassAnalysis from './analysis/CompassAnalysis.tsx';
+import ScatterFitAnalysis from './analysis/ScatterFitAnalysis.tsx';
+import ThrusterAnalysis from './analysis/ThrusterAnalysis.tsx';
+import TrackingAnalysis from './analysis/TrackingAnalysis.tsx';
+import SpectrumAnalysis from './analysis/SpectrumAnalysis.tsx';
 
-type ModuleId = 'stats' | 'compass';
+type ModuleId = 'stats' | 'compass' | 'scatter' | 'thruster' | 'tracking' | 'spectrum';
 
 const TIME_FIELD = 'TimeUS';
 
@@ -27,6 +31,8 @@ export default function AnalysisModal({ onClose }: { onClose: () => void }) {
   }, []);
 
   const magSources = useMemo(() => (log ? detectMagSources(log.messages) : []), [log]);
+  const actuatorSources = useMemo(() => (log ? detectActuatorSources(log.messages) : []), [log]);
+  const trackingPairs = useMemo(() => (log ? detectTrackingPairs(log.messages) : []), [log]);
 
   // The signal shown in the brush: a magnetometer axis reads as a clean sinusoid
   // during a rotation, which is exactly what a user is trying to locate; failing
@@ -64,9 +70,16 @@ export default function AnalysisModal({ onClose }: { onClose: () => void }) {
 
   if (!log) return null;
 
+  // A module is offered only when the log carries what it reads. Scatter and
+  // Spectrum always are: both can work over any pair of numeric columns, so
+  // there is no message whose absence rules them out.
   const modules: { id: ModuleId; label: string; available: boolean }[] = [
     { id: 'stats', label: 'Window stats', available: true },
     { id: 'compass', label: 'Compass', available: magSources.length > 0 },
+    { id: 'thruster', label: 'Outputs', available: actuatorSources.length > 0 },
+    { id: 'tracking', label: 'Tracking', available: trackingPairs.length > 0 },
+    { id: 'scatter', label: 'Scatter fit', available: true },
+    { id: 'spectrum', label: 'Spectrum', available: true },
   ];
 
   const close = () => dialogRef.current?.close();
@@ -154,6 +167,10 @@ export default function AnalysisModal({ onClose }: { onClose: () => void }) {
         <div className="analysis-body">
           {tab === 'stats' && <WindowStatsTable range={range} extraFields={magFields} />}
           {tab === 'compass' && magSources.length > 0 && <CompassAnalysis range={range} />}
+          {tab === 'thruster' && actuatorSources.length > 0 && <ThrusterAnalysis range={range} />}
+          {tab === 'tracking' && trackingPairs.length > 0 && <TrackingAnalysis range={range} />}
+          {tab === 'scatter' && <ScatterFitAnalysis range={range} />}
+          {tab === 'spectrum' && <SpectrumAnalysis range={range} />}
         </div>
       </div>
     </dialog>

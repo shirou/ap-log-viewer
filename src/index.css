@@ -990,3 +990,93 @@ input[type="text"] {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ---- Thruster / output channels ---- */
+.thruster-bars {
+  margin: 10px 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.thruster-bar-row {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr) 56px 56px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.thruster-ch {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.thruster-track {
+  position: relative;
+  height: 14px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg);
+}
+.thruster-span {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  background: var(--accent);
+  opacity: 0.35;
+  border-radius: 2px;
+}
+.thruster-mean {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--accent);
+}
+.thruster-val,
+.thruster-off {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.thruster-off {
+  color: var(--muted);
+}
+.thruster-idle td {
+  opacity: 0.45;
+}
+
+/* ---- Tracking ---- */
+.tracking-plot,
+.spectrum-plot {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  margin-bottom: 12px;
+}
+.tracking-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  align-items: start;
+}
+.tracking-grid h3,
+.spectrum-analysis h3 {
+  font-size: 13px;
+  margin: 0 0 6px;
+}
+
+/* ---- Spectrum ---- */
+.spectrum-readout dl {
+  grid-template-columns: auto auto;
+}
+.spectrum-analysis .analysis-controls label input[type='checkbox'] {
+  margin-right: 4px;
+}
+
+@media (max-width: 768px) {
+  .tracking-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
