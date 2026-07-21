@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useLogStore } from './store/logStore.ts';
 import FileDropzone from './components/FileDropzone.tsx';
 import MapView from './components/MapView.tsx';
@@ -7,6 +7,7 @@ import Timeline from './components/Timeline.tsx';
 import FieldTree from './components/FieldTree.tsx';
 import ParamsTable from './components/ParamsTable.tsx';
 import MessagesLog from './components/MessagesLog.tsx';
+import AnalysisModal from './components/AnalysisModal.tsx';
 
 type Tab = 'fields' | 'params' | 'messages';
 
@@ -18,6 +19,12 @@ export default function App() {
   const theme = useLogStore((s) => s.theme);
   const toggleTheme = useLogStore((s) => s.toggleTheme);
   const [tab, setTab] = useState<Tab>('fields');
+  const [analysisOpen, setAnalysisOpen] = useState(false);
+  // Don't let the modal outlive its log: a reset or a new parse closes it, so it
+  // can't reappear unbidden over the next log.
+  useEffect(() => {
+    if (status !== 'ready') setAnalysisOpen(false);
+  }, [status]);
   const [sidebarOpen, setSidebarOpen] = useState(
     () => typeof window === 'undefined' || window.innerWidth > 768,
   );
@@ -83,8 +90,11 @@ export default function App() {
         >
           {theme === 'dark' ? '☀' : '☾'}
         </button>
+        {ready && <button onClick={() => setAnalysisOpen(true)}>Analysis</button>}
         {ready && <button onClick={reset}>Open another log</button>}
       </header>
+
+      {ready && analysisOpen && <AnalysisModal onClose={() => setAnalysisOpen(false)} />}
 
       {!ready ? (
         <FileDropzone />

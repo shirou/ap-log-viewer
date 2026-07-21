@@ -5,20 +5,7 @@ import { selectDisplayTime, useLogStore } from '../store/logStore.ts';
 import { fieldKey, type FieldRef, type LogData } from '../model/log.ts';
 import { assignAxes, extentOf, type AxisAssignment, type AxisSide, type Col } from '../lib/axisGroups.ts';
 import { nearestSampleIndex } from '../lib/series.ts';
-
-// Series colours per theme. The light set is darker/more saturated so the lines
-// keep enough contrast against a white plot in daylight.
-const PALETTES = {
-  dark: ['#4fd1c5', '#f6ad55', '#63b3ed', '#fc8181', '#b794f4', '#68d391', '#f687b3'],
-  light: ['#0a6e66', '#b45309', '#1d4ed8', '#c2262d', '#6d28d9', '#15803d', '#be185d'],
-} as const;
-
-// Read a CSS custom property off <html>, falling back when unavailable (SSR/tests).
-function cssVar(name: string, fallback: string): string {
-  if (typeof getComputedStyle === 'undefined') return fallback;
-  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  return v || fallback;
-}
+import { PALETTES, cssVar } from '../lib/plotTheme.ts';
 
 // How long the cursor must rest before the value tooltip appears. Without this
 // delay the tooltip would flicker on every pixel of mouse movement.
