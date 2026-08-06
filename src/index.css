@@ -20,6 +20,18 @@
   --plot-axis: #8290a3;
   --plot-grid: #2a334060;
   --plot-cursor: #f6ad55;
+  /* Command markers. A hue no series palette uses, so a marker is never mistaken
+     for a curve; the dashes and the flag carry the distinction even if one is. */
+  --plot-command: #ff5470;
+  /* Mission-step markers. Deliberately near the axis colour: these are context
+     for reading the curves, not events, and there are a lot of them. */
+  --plot-mission: #7d8fa6;
+  /* Backing drawn behind marker labels. The plot canvas is transparent and
+     .plot-area sets no background of its own, so what shows through is the
+     body's --bg: keep this a copy of it. Named separately rather than aliased so
+     that giving the plot its own background later is a one-line change, and
+     because cssVar() reads this through getComputedStyle. */
+  --plot-bg: #0e1116;
   /* Drag-to-zoom selection rectangle (uPlot .u-select). */
   --plot-select: rgba(79, 209, 197, 0.28);
   --plot-select-border: rgba(79, 209, 197, 0.9);
@@ -46,6 +58,9 @@
   --plot-axis: #3f4854;
   --plot-grid: #aeb9c6;
   --plot-cursor: #b45309;
+  --plot-command: #b3123c;
+  --plot-mission: #55627a;
+  --plot-bg: #eceff3; /* = --bg; see the dark theme's note */
   /* Drag-to-zoom selection rectangle (uPlot .u-select). */
   --plot-select: rgba(10, 110, 102, 0.22);
   --plot-select-border: rgba(10, 110, 102, 0.85);
@@ -358,6 +373,19 @@ input[type="text"] {
 }
 .chip:hover {
   border-color: var(--accent-2);
+}
+/* A chip acting as a toggle, shown in its on state. Colour *and* a glyph the
+   label switches (◆/◇, ┆/·), so the state does not rest on hue alone under
+   glare — which is the condition this viewer is read in. */
+.chip[aria-pressed='true'] {
+  border-color: var(--plot-command);
+  color: var(--plot-command);
+}
+/* The mission-step layer is the quieter of the two annotations on the plot, and
+   its chip says so by wearing the same colour the markers do. */
+.chip-quiet[aria-pressed='true'] {
+  border-color: var(--plot-mission);
+  color: var(--plot-mission);
 }
 
 /* Series chips hold two separate controls, so the chip itself is a plain

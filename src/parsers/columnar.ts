@@ -8,6 +8,44 @@
 import type { MessageSeries, Trajectory } from '../model/log.ts';
 import { searchSortedLE } from '../lib/series.ts';
 
+/**
+ * Put a parser's event list into the time order the model promises, and drop the
+ * copies of one event that a reader can hand it.
+ *
+ * Both parsers collect these in arrival order, which is not time order: a tlog's
+ * wall clock can step mid-session — LogBuilder sorts every message series for
+ * that same reason — and the DataFlash reader resyncs through damage, so it can
+ * decode one record twice.
+ *
+ * Deduplication has to happen *after* the sort, which is the whole reason this
+ * is one function rather than something each collector does as it goes. Copies
+ * of a frame need not arrive next to each other: two links of unequal latency
+ * deliver the second one behind a later frame, and a collector comparing against
+ * what it just pushed sees nothing. Sorted, everything sharing an instant is
+ * contiguous, and `keyOf` says what makes two entries there the same event.
+ *
+ * The sort is stable, so events that genuinely share an instant keep the order
+ * they were logged in. Sorts `events` in place and returns the kept subset.
+ */
+export function normalizeEvents<T extends { time: number }>(events: T[], keyOf: (e: T) => number): T[] {
+  events.sort((a, b) => a.time - b.time);
+  const out: T[] = [];
+  // NaN never equals itself, so the first event always opens a fresh instant.
+  let instant = NaN;
+  const seen = new Set<number>();
+  for (const e of events) {
+    if (e.time !== instant) {
+      instant = e.time;
+      seen.clear();
+    }
+    const key = keyOf(e);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(e);
+  }
+  return out;
+}
+
 export type ColKind = 'number' | 'string';
 export interface ColumnDef {
   label: string;

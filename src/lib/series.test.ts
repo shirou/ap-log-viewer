@@ -51,12 +51,18 @@ describe('formatDuration', () => {
     expect(at(3599.94)).toBe('59:59.9');
   });
 
+  it('grows an hours field once the log runs past one', () => {
+    expect(at(3600)).toBe('1:00:00.0');
+    expect(at(3725.5)).toBe('1:02:05.5');
+    expect(at(36000)).toBe('10:00:00.0');
+  });
+
   // Regression: rounding the seconds after splitting let them reach 60 without
   // carrying, so the readout flashed "0:60.0" at every minute boundary.
   it('carries into the minute instead of showing 60 seconds', () => {
     expect(at(59.98)).toBe('1:00.0');
     expect(at(119.97)).toBe('2:00.0');
-    expect(at(3599.98)).toBe('60:00.0');
+    expect(at(3599.98)).toBe('1:00:00.0');
   });
 
   it('clamps a negative duration to zero', () => {

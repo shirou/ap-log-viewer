@@ -1,15 +1,42 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
 import { selectDisplayTime, useLogStore } from '../store/logStore.ts';
 import { fieldKey, type FieldRef, type LogData } from '../model/log.ts';
 import { assignAxes, extentOf, type AxisAssignment, type AxisSide, type Col } from '../lib/axisGroups.ts';
 import { nearestSampleIndex } from '../lib/series.ts';
+import { elapsedTicks, formatElapsed } from '../lib/format.ts';
 import { PALETTES, cssVar } from '../lib/plotTheme.ts';
 
 // How long the cursor must rest before the value tooltip appears. Without this
 // delay the tooltip would flicker on every pixel of mouse movement.
 const TOOLTIP_DELAY_MS = 250;
+
+/**
+ * Marker geometry, in CSS pixels (scaled by pxRatio when drawn).
+ *
+ * The two annotations are deliberately unequal. A command is something someone
+ * did to the vehicle, so it gets weight, a flag and a full name down the plot; a
+ * mission step is the vehicle reporting its own progress, and there are far more
+ * of them, so it gets a hairline and a two-character tag by the axis. Reading
+ * the plot should never cost a second look to tell which is which.
+ */
+const MARK_PX = {
+  /** Half-width of the flag at the top of a command marker. */
+  flag: 4,
+  /** How far that flag hangs below the top of the plot. */
+  flagDrop: 6,
+  /** Smallest gap between two labelled markers; closer ones go unlabelled. */
+  labelGap: 18,
+  /** Gap between a marker and the label beside it. */
+  labelInset: 5,
+  fontSize: 11,
+  /** Mission tags are shorter, so they can sit closer before they collide. */
+  stepLabelGap: 6,
+  stepFontSize: 10,
+  /** How far a mission tag sits above the x axis. */
+  stepLabelLift: 4,
+} as const;
 
 function fmtVal(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v)) return '—';
@@ -57,6 +84,184 @@ interface Built extends Merged {
 
 /** Marks which axis a series is drawn against. Shape, not colour, so it survives glare. */
 const GLYPH = ['◀', '▶'] as const;
+
+/**
+ * One annotation, placed on the plot's x domain (seconds since log start).
+ *
+ * In time order, which the model guarantees (`LogData.commands` and
+ * `missionSteps` are sorted by their parsers) and which the left-to-right label
+ * layout below depends on.
+ */
+interface Mark {
+  sec: number;
+  label: string;
+}
+
+/** `text` trimmed with an ellipsis until it fits `maxWidth`, measured in `ctx`. */
+function ellipsize(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string {
+  if (ctx.measureText(text).width <= maxWidth) return text;
+  let cut = text.length;
+  while (cut > 1 && ctx.measureText(`${text.slice(0, cut)}…`).width > maxWidth) cut--;
+  return `${text.slice(0, cut)}…`;
+}
+
+/**
+ * The marks currently on screen, as canvas x positions.
+ *
+ * This runs on every redraw, which during playback is once per animation frame,
+ * so a plain scan looks wasteful — and `rangeIndices` would give the visible run
+ * by binary search. It is deliberately not used: it leans on `searchSortedLE`,
+ * whose `t <= times[0]` shortcut answers with the *first* of a run of equal
+ * stamps where the range wants the last, so a window ending exactly on a
+ * duplicated first mark comes back short. Nothing visible is lost there — the
+ * dropped marks sit on the pixel their survivor already occupies — but that is a
+ * coincidence, not a guarantee, and it is not worth buying: at 18000 marks, far
+ * more than any real log carries, the scan costs 0.6 ms of a 16.7 ms frame, and
+ * what the search cannot avoid is the drawing.
+ *
+ * Everything downstream works in canvas pixels — `bbox` and `valToPos(..., true)`
+ * both do — which is why the CSS-pixel constants in MARK_PX are scaled by
+ * `pxRatio` wherever they are used.
+ */
+function visibleMarks(u: uPlot, marks: Mark[]): Array<{ x: number; label: string }> {
+  const { min, max } = u.scales.x;
+  if (marks.length === 0 || min == null || max == null) return [];
+  const out: Array<{ x: number; label: string }> = [];
+  for (const m of marks) {
+    if (m.sec < min || m.sec > max) continue;
+    // Half-pixel offset so a 1-device-pixel line lands on a pixel rather than
+    // straddling two and coming out grey.
+    out.push({ x: Math.round(u.valToPos(m.sec, 'x', true)) + 0.5, label: m.label });
+  }
+  return out;
+}
+
+/** Clip drawing to the plot rect, so a marker cannot spill over the axes. */
+function clipToPlot(u: uPlot): void {
+  const { left, top, width, height } = u.bbox;
+  u.ctx.beginPath();
+  u.ctx.rect(left, top, width, height);
+  u.ctx.clip();
+}
+
+/**
+ * Vertical markers where a command was sent to the vehicle.
+ *
+ * Dashed, flagged and labelled rather than merely coloured: the series palette
+ * has seven entries and any hue picked here could end up next to a curve wearing
+ * something close to it, whereas nothing else on the plot is a full-height
+ * dashed line.
+ */
+function drawCommands(u: uPlot, marks: Mark[], stroke: string, halo: string): void {
+  const visible = visibleMarks(u, marks);
+  if (visible.length === 0) return;
+  const r = uPlot.pxRatio;
+  const { top: by, height: bh } = u.bbox;
+  const ctx = u.ctx;
+
+  ctx.save();
+  clipToPlot(u);
+
+  // Lines first, then flags and labels, so the dash pattern is set once.
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = 1.5 * r;
+  ctx.setLineDash([5 * r, 4 * r]);
+  ctx.beginPath();
+  for (const v of visible) {
+    ctx.moveTo(v.x, by);
+    ctx.lineTo(v.x, by + bh);
+  }
+  ctx.stroke();
+
+  ctx.setLineDash([]);
+  ctx.fillStyle = stroke;
+  ctx.beginPath();
+  for (const v of visible) {
+    ctx.moveTo(v.x - MARK_PX.flag * r, by);
+    ctx.lineTo(v.x + MARK_PX.flag * r, by);
+    ctx.lineTo(v.x, by + MARK_PX.flagDrop * r);
+    ctx.closePath();
+  }
+  ctx.fill();
+
+  // Labels run top-to-bottom beside their marker. On a long flight they crowd
+  // far past legibility, so they are laid down left to right and any that would
+  // land on the previous one is skipped — zooming in brings it back.
+  ctx.font = `${MARK_PX.fontSize * r}px system-ui, sans-serif`;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = 3 * r;
+  ctx.strokeStyle = halo;
+  const room = bh - (MARK_PX.flagDrop + 4) * r;
+  let labelledTo = -Infinity;
+  for (const v of visible) {
+    if (v.x - labelledTo < MARK_PX.labelGap * r) continue;
+    labelledTo = v.x;
+    const text = ellipsize(ctx, v.label, room);
+    ctx.save();
+    ctx.translate(v.x + MARK_PX.labelInset * r, by + (MARK_PX.flagDrop + 2) * r);
+    ctx.rotate(Math.PI / 2);
+    // Haloed against the plot background: the label crosses whatever series
+    // happen to run under it, and unbacked text there is unreadable.
+    ctx.strokeText(text, 0, 0);
+    ctx.fillText(text, 0, 0);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+/**
+ * Hairline markers where the vehicle moved on to the next item of its plan.
+ *
+ * Held well below the command markers on purpose. These are frequent — a survey
+ * pattern steps through its waypoints dozens of times an hour — and they are
+ * context for reading the curves rather than events in their own right, so they
+ * are a fine dash in the axis colour, with no flag and a short `3` tag sitting
+ * on the baseline instead of a name written down the plot.
+ */
+function drawMissionSteps(u: uPlot, marks: Mark[], stroke: string, halo: string): void {
+  const visible = visibleMarks(u, marks);
+  if (visible.length === 0) return;
+  const r = uPlot.pxRatio;
+  const { top: by, height: bh } = u.bbox;
+  const ctx = u.ctx;
+
+  ctx.save();
+  clipToPlot(u);
+
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = 1 * r;
+  ctx.setLineDash([3 * r, 4 * r]);
+  ctx.beginPath();
+  for (const v of visible) {
+    ctx.moveTo(v.x, by);
+    ctx.lineTo(v.x, by + bh);
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Tags are laid down left to right like the command labels, but measured:
+  // they vary in width (`3` against `12`) and are close enough together that a
+  // fixed gap would either overlap or drop tags that would have fitted.
+  ctx.font = `${MARK_PX.stepFontSize * r}px system-ui, sans-serif`;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = 3 * r;
+  ctx.strokeStyle = halo;
+  ctx.fillStyle = stroke;
+  const y = by + bh - MARK_PX.stepLabelLift * r;
+  let labelledTo = -Infinity;
+  for (const v of visible) {
+    const x = v.x + MARK_PX.labelInset * r;
+    if (x - labelledTo < MARK_PX.stepLabelGap * r) continue;
+    labelledTo = x + ctx.measureText(v.label).width;
+    ctx.strokeText(v.label, x, y);
+    ctx.fillText(v.label, x, y);
+  }
+  ctx.restore();
+}
 
 /** A tooltip cell. Text goes in as text, never as markup — see showTip. */
 function span(className: string, text: string): HTMLSpanElement {
@@ -160,6 +365,12 @@ export default function PlotPanel() {
   const plotRef = useRef<uPlot | null>(null);
   // Live cursor position in seconds-since-start, read by the draw hook.
   const cursorSecRef = useRef(0);
+  // Annotation layers on/off. Held as refs as well so toggling one only redraws
+  // the canvas instead of tearing the plot down and building it again.
+  const [showCommands, setShowCommands] = useState(true);
+  const showCommandsRef = useRef(showCommands);
+  const [showSteps, setShowSteps] = useState(true);
+  const showStepsRef = useRef(showSteps);
   // A zoom carried across a plot rebuild, so a cosmetic edit — moving a series
   // to the other axis, adding one — does not throw the view away. Tagged with
   // `loadId`, not the LogData: purging a message makes a new log object without
@@ -168,6 +379,18 @@ export default function PlotPanel() {
   const xViewRef = useRef<{ loadId: number; min: number; max: number } | null>(null);
 
   const merged = useMemo(() => (log ? buildData(log, selectedFields) : null), [log, selectedFields]);
+
+  // Annotations on the plot's own x domain. A .bin carries no commands at all,
+  // and a log that flew no mission carries no steps, so either can be empty and
+  // the layer then simply never appears.
+  const commands = useMemo<Mark[]>(
+    () => (log ? log.commands.map((c) => ({ sec: (c.time - log.startTime) / 1e6, label: c.name })) : []),
+    [log],
+  );
+  const steps = useMemo<Mark[]>(
+    () => (log ? log.missionSteps.map((s) => ({ sec: (s.time - log.startTime) / 1e6, label: String(s.seq) })) : []),
+    [log],
+  );
 
   // Scanning the columns is the expensive half and depends only on the data, so
   // it is kept off the override's memo — otherwise every ◀/▶ click would re-walk
@@ -222,7 +445,10 @@ export default function PlotPanel() {
       // (src/parsers/dataflash.ts), so a crafted file can put anything it likes
       // in one — through innerHTML that is script execution on hover, and
       // opening files you did not write is the whole point of this app.
-      tooltip.replaceChildren(span('tt-time', `${fmtVal(t)}s`));
+      // Two decimals, where the axis and the timeline readout show one: this is
+      // the precision readout, and a series sampled at 50 Hz has several samples
+      // inside a tenth of a second.
+      tooltip.replaceChildren(span('tt-time', formatElapsed(t, 2)));
       built.labels.forEach((label, i) => {
         const row = document.createElement('div');
         row.className = 'tt-row';
@@ -271,6 +497,9 @@ export default function PlotPanel() {
     const axisStroke = cssVar('--plot-axis', '#8290a3');
     const gridStroke = cssVar('--plot-grid', '#2a334060');
     const cursorStroke = cssVar('--plot-cursor', '#f6ad55');
+    const commandStroke = cssVar('--plot-command', '#ff5470');
+    const stepStroke = cssVar('--plot-mission', '#8290a3');
+    const markHalo = cssVar('--plot-bg', '#0e1116');
 
     const usesLeft = built.axes.side.some((s) => s === 0);
     const usesRight = built.axes.split;
@@ -280,7 +509,14 @@ export default function PlotPanel() {
       height: el.clientHeight || 240,
       scales: { x: { time: false }, ...(usesRight ? { y2: {} } : {}) },
       axes: [
-        { stroke: axisStroke, grid: { stroke: gridStroke }, values: (_u, vals) => vals.map((v) => `${v}s`) },
+        {
+          stroke: axisStroke,
+          grid: { stroke: gridStroke },
+          values: (_u, vals, _axisIdx, _foundSpace, foundIncr) => elapsedTicks(vals, foundIncr),
+          // m:ss is wider than the bare seconds this replaced, and h:mm:ss wider
+          // again; without the extra room uPlot thins the ticks out to fit.
+          space: 70,
+        },
         // A y axis is drawn only while something is on it: pinning every series
         // to one side is reachable from the chips, and the other axis would
         // otherwise be left ranging over a scale that never receives data.
@@ -341,8 +577,14 @@ export default function PlotPanel() {
             }, TOOLTIP_DELAY_MS);
           },
         ],
-        // Vertical line marking the timeline cursor.
         draw: [
+          // Annotations go down before the playhead, quietest first, so the
+          // stacking order matches how loudly each one is meant to read.
+          (u) => {
+            if (showStepsRef.current) drawMissionSteps(u, steps, stepStroke, markHalo);
+            if (showCommandsRef.current) drawCommands(u, commands, commandStroke, markHalo);
+          },
+          // Vertical line marking the timeline cursor.
           (u) => {
             const xVal = cursorSecRef.current;
             const left = u.valToPos(xVal, 'x', true);
@@ -420,7 +662,15 @@ export default function PlotPanel() {
       // theme switched); every view would keep showing that instant.
       setHoverTime(null);
     };
-  }, [built, log, loadId, setCursorTime, setHoverTime, palette]);
+  }, [built, log, loadId, commands, steps, setCursorTime, setHoverTime, palette]);
+
+  // Toggling a layer only changes what the canvas draws, so redraw rather than
+  // letting the flag rebuild the plot (which would also drop the zoom).
+  useEffect(() => {
+    showCommandsRef.current = showCommands;
+    showStepsRef.current = showSteps;
+    plotRef.current?.redraw(false, false);
+  }, [showCommands, showSteps]);
 
   // Move the cursor line when the shared timeline changes (including to a
   // hovered preview, so the line never contradicts the map marker).
@@ -441,10 +691,41 @@ export default function PlotPanel() {
     <div className="plot-wrap">
       <div className="plot-header">
         <span className="plot-title">Time series</span>
-        <span className="plot-hint">x: seconds from start · drag to zoom</span>
+        <span className="plot-hint">x: time from start (m:ss) · drag to zoom</span>
         {selectedFields.length > 0 && (
           <button className="chip" onClick={resetZoom} title="Reset zoom to full range (double-click also works)">
             ⤢ Reset
+          </button>
+        )}
+        {/* Offered only when the log has commands to show: a .bin never does,
+            and a dead toggle would read as "this log has none plotted" rather
+            than "this kind of log cannot carry them". */}
+        {commands.length > 0 && selectedFields.length > 0 && (
+          <button
+            className="chip"
+            aria-pressed={showCommands}
+            onClick={() => setShowCommands((v) => !v)}
+            title={
+              showCommands
+                ? 'Commands sent to the vehicle are marked — click to hide them'
+                : 'Show a marker where each command was sent to the vehicle'
+            }
+          >
+            {showCommands ? '◆' : '◇'} {commands.length} command{commands.length === 1 ? '' : 's'}
+          </button>
+        )}
+        {steps.length > 0 && selectedFields.length > 0 && (
+          <button
+            className="chip chip-quiet"
+            aria-pressed={showSteps}
+            onClick={() => setShowSteps((v) => !v)}
+            title={
+              showSteps
+                ? 'Each move to the next mission item is marked — click to hide them'
+                : 'Show a marker where the vehicle moved to the next mission item'
+            }
+          >
+            {showSteps ? '┆' : '·'} {steps.length} mission step{steps.length === 1 ? '' : 's'}
           </button>
         )}
         {selectedFields.map((r) => {

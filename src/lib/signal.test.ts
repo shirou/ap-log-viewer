@@ -10,6 +10,8 @@ function logOf(messages: Record<string, MessageSeries>): LogData {
     params: {},
     modes: [],
     texts: [],
+    commands: [],
+    missionSteps: [],
     trajectory: {
       time: new Float64Array(0),
       lat: new Float64Array(0),

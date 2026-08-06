@@ -1,5 +1,7 @@
 // Small helpers over the columnar log model.
 
+import { formatElapsed } from './format.ts';
+
 /** Index of the last sample whose time <= t (binary search on a sorted array). */
 export function searchSortedLE(times: ArrayLike<number>, t: number): number {
   let lo = 0;
@@ -122,11 +124,13 @@ export function rangeValueAtX(
   return Math.min(max, Math.max(min, v));
 }
 
+/**
+ * Playhead / message readout: `m:ss.s`, or `h:mm:ss.s` once past an hour.
+ *
+ * Negative input reads as zero — this measures from the log's start, and the
+ * only way to be handed less than that is a rounding wobble at the very
+ * beginning, which should read 0:00.0 rather than -0:00.0.
+ */
 export function formatDuration(microFromStart: number): string {
-  // Round to the displayed precision *before* splitting into minutes and
-  // seconds. Splitting first lets the seconds round up to 60 without carrying,
-  // so every minute boundary flashed "0:60.0" instead of "1:00.0".
-  const tenths = Math.round(Math.max(0, microFromStart) / 1e5);
-  const m = Math.floor(tenths / 600);
-  return `${m}:${((tenths - m * 600) / 10).toFixed(1).padStart(4, '0')}`;
+  return formatElapsed(Math.max(0, microFromStart) / 1e6, 1);
 }
