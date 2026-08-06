@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatDuration, nearestSampleIndex, rangeValueAtX } from './series.ts';
+import { formatDuration, nearestSampleIndex, rangeValueAtX, searchSortedLE } from './series.ts';
 
 // The rect is the track element itself, so the value spans it edge to edge.
 const RECT = { left: 100, width: 600 };
@@ -39,6 +39,26 @@ describe('rangeValueAtX', () => {
 
   it('leaves the value unsnapped when step is not positive', () => {
     expect(at(400, 0)).toBe(500);
+  });
+});
+
+describe('searchSortedLE', () => {
+  it('answers with the last index at or before t', () => {
+    const t = Float64Array.from([10, 20, 30]);
+    expect(searchSortedLE(t, 20)).toBe(1);
+    expect(searchSortedLE(t, 25)).toBe(1);
+    expect(searchSortedLE(t, 30)).toBe(2);
+  });
+
+  it('lands on the end of a run of equal timestamps, wherever the run sits', () => {
+    expect(searchSortedLE(Float64Array.from([5, 5, 5, 20]), 5)).toBe(2); // leading
+    expect(searchSortedLE(Float64Array.from([0, 5, 5, 5, 20]), 5)).toBe(3); // interior
+    expect(searchSortedLE(Float64Array.from([0, 5, 5, 5]), 5)).toBe(3); // trailing
+  });
+
+  it('clamps below the first sample and reports -1 for an empty series', () => {
+    expect(searchSortedLE(Float64Array.from([10, 20]), 4)).toBe(0);
+    expect(searchSortedLE(new Float64Array(0), 4)).toBe(-1);
   });
 });
 

@@ -109,15 +109,10 @@ function ellipsize(ctx: CanvasRenderingContext2D, text: string, maxWidth: number
  * The marks currently on screen, as canvas x positions.
  *
  * This runs on every redraw, which during playback is once per animation frame,
- * so a plain scan looks wasteful — and `rangeIndices` would give the visible run
- * by binary search. It is deliberately not used: it leans on `searchSortedLE`,
- * whose `t <= times[0]` shortcut answers with the *first* of a run of equal
- * stamps where the range wants the last, so a window ending exactly on a
- * duplicated first mark comes back short. Nothing visible is lost there — the
- * dropped marks sit on the pixel their survivor already occupies — but that is a
- * coincidence, not a guarantee, and it is not worth buying: at 18000 marks, far
- * more than any real log carries, the scan costs 0.6 ms of a 16.7 ms frame, and
- * what the search cannot avoid is the drawing.
+ * so a plain scan looks wasteful — `rangeIndices` would give the visible run by
+ * binary search instead. It is not worth the parallel array it would need to be
+ * fed: at 18000 marks, far more than any real log carries, the scan costs 0.6 ms
+ * of a 16.7 ms frame, and what a search cannot avoid is the drawing.
  *
  * Everything downstream works in canvas pixels — `bbox` and `valToPos(..., true)`
  * both do — which is why the CSS-pixel constants in MARK_PX are scaled by

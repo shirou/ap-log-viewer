@@ -2,12 +2,25 @@
 
 import { formatElapsed } from './format.ts';
 
-/** Index of the last sample whose time <= t (binary search on a sorted array). */
+/**
+ * Index of the last sample whose time <= t (binary search on a sorted array).
+ *
+ * Empty gives -1; a `t` before the first sample clamps to 0, since every caller
+ * either guards that case or wants the nearest end.
+ *
+ * The shortcut below tests `<`, not `<=`, and the difference is the whole
+ * contract: where the first samples share a timestamp and `t` is exactly it,
+ * "last at or before" is the end of that run, not index 0. Answering 0 there
+ * silently shortened every window whose right edge landed on a duplicated first
+ * stamp — and runs of equal timestamps are ordinary here, because a message with
+ * no time column inherits the last stamp seen. `t >= times[hi]` needs no such
+ * care: hi is already the last of any run at that end.
+ */
 export function searchSortedLE(times: ArrayLike<number>, t: number): number {
   let lo = 0;
   let hi = times.length - 1;
   if (hi < 0) return -1;
-  if (t <= times[0]) return 0;
+  if (t < times[0]) return 0;
   if (t >= times[hi]) return hi;
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
