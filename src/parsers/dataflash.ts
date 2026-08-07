@@ -9,10 +9,10 @@
 // carrying any partial trailing message into the next chunk. This keeps peak
 // memory bounded by ~one chunk instead of loading a multi-GB file at once.
 
-import type { LogData, ModeChange, TextMessage } from '../model/log.ts';
+import type { LogData, MissionStep, ModeChange, TextMessage } from '../model/log.ts';
 import type { LogSource } from './source.ts';
 import { FORMAT_TYPES, formatSize } from './formatChars.ts';
-import { LogBuilder, extractTrajectory, type ColumnDef } from './columnar.ts';
+import { LogBuilder, extractTrajectory, normalizeEvents, type ColumnDef } from './columnar.ts';
 import { MissionCollector, sniffDegrees } from './mission.ts';
 
 const HEAD1 = 0xa3;
@@ -45,6 +45,7 @@ interface ParseState {
   params: Record<string, number>;
   modes: ModeChange[];
   texts: TextMessage[];
+  missionSteps: MissionStep[];
   mission: MissionCollector;
   minTime: number;
   maxTime: number;
@@ -66,6 +67,7 @@ export async function parseDataflash(source: LogSource, opts: ParseOptions = {})
     params: {},
     modes: [],
     texts: [],
+    missionSteps: [],
     mission: new MissionCollector(),
     minTime: Infinity,
     maxTime: -Infinity,
@@ -131,12 +133,23 @@ export async function parseDataflash(source: LogSource, opts: ParseOptions = {})
     maxTime = trajectory.time.length ? trajectory.time[trajectory.time.length - 1] : 0;
   }
 
+  // TimeUS climbs steadily in a healthy .bin, but this reader resyncs through
+  // damage and a corrupt row can carry any stamp at all. A mission item does not
+  // start twice within one microsecond, so a repeat there is the reader's, not
+  // the vehicle's.
+  const missionSteps = normalizeEvents(st.missionSteps, (s) => s.seq);
+
   return {
     source: 'bin',
     messages,
     params: st.params,
     modes: st.modes,
     texts: st.texts,
+    // A .bin records what the vehicle did, not what a GCS asked of it: there is
+    // no COMMAND_LONG equivalent on disk. `CMD` looks like one but is the
+    // uploaded plan re-dumped, which is already surfaced as `mission`.
+    commands: [],
+    missionSteps,
     trajectory,
     mission: st.mission.finalize(),
     startTime: minTime,
@@ -251,13 +264,28 @@ function extractSpecial(
       if (st.modes[st.modes.length - 1]?.mode !== label) st.modes.push({ time, mode: label });
       break;
     }
+    // One item as it *starts executing* (4.6+). Shares CMD's layout but means
+    // the opposite thing: a trace through the plan rather than the plan, which
+    // makes it useless for `mission` — partial when a flight is cut short, and
+    // repeating indices wherever a DO_JUMP loops — and exactly right here. It
+    // is the .bin's answer to a tlog's MISSION_CURRENT.
+    //
+    // Every record is already an event, so unlike MISSION_CURRENT there is no
+    // change filter: a plan that runs the same item twice in a row did so.
+    case 'MISE': {
+      const seq = values['CNum'];
+      if (typeof seq !== 'number' || !Number.isFinite(seq)) break;
+      // A record the reader decoded twice after resyncing across damage is
+      // collapsed by normalizeEvents at the end, where the list is sorted and
+      // the two copies are guaranteed to be neighbours.
+      st.missionSteps.push({ time, seq });
+      break;
+    }
     // The uploaded mission, re-dumped in full whenever the plan changes:
     //   TimeUS,CTot,CNum,CId,Prm1..Prm4,Lat,Lng,Alt,Frame
     //
-    // 4.6 added a `MISE` message sharing this exact layout, and it is
-    // deliberately not read here: MISE logs one item as it *starts executing*,
-    // so it is not the plan but a trace through it — partial when a mission is
-    // cut short, and repeating indices wherever a DO_JUMP loops.
+    // Deliberately not the source of `missionSteps` — see `MISE` above for the
+    // difference, which is the whole reason both messages exist.
     case 'CMD': {
       const num = (label: string): number => {
         const v = values[label];

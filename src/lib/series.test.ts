@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatDuration, nearestSampleIndex, rangeValueAtX } from './series.ts';
+import { formatDuration, nearestSampleIndex, rangeValueAtX, searchSortedLE } from './series.ts';
 
 // The rect is the track element itself, so the value spans it edge to edge.
 const RECT = { left: 100, width: 600 };
@@ -42,6 +42,26 @@ describe('rangeValueAtX', () => {
   });
 });
 
+describe('searchSortedLE', () => {
+  it('answers with the last index at or before t', () => {
+    const t = Float64Array.from([10, 20, 30]);
+    expect(searchSortedLE(t, 20)).toBe(1);
+    expect(searchSortedLE(t, 25)).toBe(1);
+    expect(searchSortedLE(t, 30)).toBe(2);
+  });
+
+  it('lands on the end of a run of equal timestamps, wherever the run sits', () => {
+    expect(searchSortedLE(Float64Array.from([5, 5, 5, 20]), 5)).toBe(2); // leading
+    expect(searchSortedLE(Float64Array.from([0, 5, 5, 5, 20]), 5)).toBe(3); // interior
+    expect(searchSortedLE(Float64Array.from([0, 5, 5, 5]), 5)).toBe(3); // trailing
+  });
+
+  it('clamps below the first sample and reports -1 for an empty series', () => {
+    expect(searchSortedLE(Float64Array.from([10, 20]), 4)).toBe(0);
+    expect(searchSortedLE(new Float64Array(0), 4)).toBe(-1);
+  });
+});
+
 describe('formatDuration', () => {
   const at = (sec: number) => formatDuration(sec * 1e6);
 
@@ -51,12 +71,18 @@ describe('formatDuration', () => {
     expect(at(3599.94)).toBe('59:59.9');
   });
 
+  it('grows an hours field once the log runs past one', () => {
+    expect(at(3600)).toBe('1:00:00.0');
+    expect(at(3725.5)).toBe('1:02:05.5');
+    expect(at(36000)).toBe('10:00:00.0');
+  });
+
   // Regression: rounding the seconds after splitting let them reach 60 without
   // carrying, so the readout flashed "0:60.0" at every minute boundary.
   it('carries into the minute instead of showing 60 seconds', () => {
     expect(at(59.98)).toBe('1:00.0');
     expect(at(119.97)).toBe('2:00.0');
-    expect(at(3599.98)).toBe('60:00.0');
+    expect(at(3599.98)).toBe('1:00:00.0');
   });
 
   it('clamps a negative duration to zero', () => {

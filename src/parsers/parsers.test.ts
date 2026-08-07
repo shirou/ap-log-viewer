@@ -212,9 +212,10 @@ describe('parseDataflash', () => {
     expect(log.mission[0].lat).toBeCloseTo(36.0, 5);
   });
 
-  it('ignores MISE, which traces execution rather than listing the plan', async () => {
-    // MISE shares CMD's layout but logs an item as it starts running, so a
-    // DO_JUMP loop repeats indices and an aborted mission never reaches the end.
+  // MISE shares CMD's layout but logs an item as it starts running, so a DO_JUMP
+  // loop repeats indices and an aborted mission never reaches the end. That makes
+  // it the wrong source for the plan and the right one for progress through it.
+  it('reads MISE as mission progress and CMD as the plan', async () => {
     const CMD = 153;
     const MISE = 154;
     const bytes = new Uint8Array([
@@ -223,13 +224,69 @@ describe('parseDataflash', () => {
       ...cmdMessage(CMD, { seq: 0, total: 3, lat: 35.0, lon: 139.0 }),
       ...cmdMessage(CMD, { seq: 1, total: 3, lat: 35.001, lon: 139.001 }),
       ...cmdMessage(CMD, { seq: 2, total: 3, lat: 35.002, lon: 139.002 }),
-      ...cmdMessage(MISE, { seq: 1, lat: 35.001, lon: 139.001 }),
-      ...cmdMessage(MISE, { seq: 2, lat: 35.002, lon: 139.002 }),
-      ...cmdMessage(MISE, { seq: 1, lat: 35.001, lon: 139.001 }),
+      ...cmdMessage(MISE, { seq: 1, timeUS: 2_000_000, lat: 35.001, lon: 139.001 }),
+      ...cmdMessage(MISE, { seq: 2, timeUS: 3_000_000, lat: 35.002, lon: 139.002 }),
+      // A DO_JUMP sends it back round; that is a step, not a duplicate.
+      ...cmdMessage(MISE, { seq: 1, timeUS: 4_000_000, lat: 35.001, lon: 139.001 }),
     ]);
     const log = await parseDataflash(new MemorySource('t.bin', bytes));
 
     expect(log.mission.map((w) => w.seq)).toEqual([0, 1, 2]);
+    expect(log.missionSteps).toEqual([
+      { time: 2_000_000, seq: 1 },
+      { time: 3_000_000, seq: 2 },
+      { time: 4_000_000, seq: 1 },
+    ]);
+  });
+
+  it('collapses a MISE the reader saw twice on one timestamp', async () => {
+    // This parser resyncs through damage, so one record can be decoded twice.
+    // A mission item cannot start twice within a microsecond.
+    const MISE = 159;
+    const bytes = new Uint8Array([
+      ...fmtMessage(MISE, 'MISE', CMD_FORMAT, CMD_COLUMNS),
+      ...cmdMessage(MISE, { seq: 2, timeUS: 5_000_000, lat: 35.0, lon: 139.0 }),
+      ...cmdMessage(MISE, { seq: 2, timeUS: 5_000_000, lat: 35.0, lon: 139.0 }),
+      ...cmdMessage(MISE, { seq: 3, timeUS: 6_000_000, lat: 35.001, lon: 139.001 }),
+    ]);
+    const log = await parseDataflash(new MemorySource('t.bin', bytes));
+
+    expect(log.missionSteps).toEqual([
+      { time: 5_000_000, seq: 2 },
+      { time: 6_000_000, seq: 3 },
+    ]);
+  });
+
+  it('collapses a MISE duplicated across an intervening record', async () => {
+    // The resynced copy need not land next to the original.
+    const MISE = 160;
+    const bytes = new Uint8Array([
+      ...fmtMessage(MISE, 'MISE', CMD_FORMAT, CMD_COLUMNS),
+      ...cmdMessage(MISE, { seq: 2, timeUS: 5_000_000, lat: 35.0, lon: 139.0 }),
+      ...cmdMessage(MISE, { seq: 3, timeUS: 6_000_000, lat: 35.001, lon: 139.001 }),
+      ...cmdMessage(MISE, { seq: 2, timeUS: 5_000_000, lat: 35.0, lon: 139.0 }),
+    ]);
+    const log = await parseDataflash(new MemorySource('t.bin', bytes));
+
+    expect(log.missionSteps).toEqual([
+      { time: 5_000_000, seq: 2 },
+      { time: 6_000_000, seq: 3 },
+    ]);
+  });
+
+  it('reports no mission progress for a log written before MISE existed', async () => {
+    const CMD = 158;
+    const bytes = new Uint8Array([
+      ...fmtMessage(CMD, 'CMD', CMD_FORMAT, CMD_COLUMNS),
+      ...cmdMessage(CMD, { seq: 0, total: 2, lat: 35.0, lon: 139.0 }),
+      ...cmdMessage(CMD, { seq: 1, total: 2, lat: 35.001, lon: 139.001 }),
+    ]);
+    const log = await parseDataflash(new MemorySource('t.bin', bytes));
+
+    // CMD is the plan being re-dumped, not the vehicle reaching anything, so it
+    // must not be mistaken for progress.
+    expect(log.missionSteps).toEqual([]);
+    expect(log.mission.map((w) => w.seq)).toEqual([0, 1]);
   });
 
   it('reports an empty mission for a log that carries no plan', async () => {
@@ -492,6 +549,138 @@ describe('parseTlog', () => {
     // x/y are float32 here, so 139.001 only survives to about six digits.
     expect(log.mission[1].lat).toBeCloseTo(35.001, 4);
     expect(log.mission[1].lon).toBeCloseTo(139.001, 4);
+  });
+
+  it('collects COMMAND_LONG/COMMAND_INT as named command events', async () => {
+    const CL = common.CommandLong as unknown as { MSG_ID: number; PAYLOAD_LENGTH: number; FIELDS: MavField[] };
+    const CI = common.CommandInt as unknown as { MSG_ID: number; PAYLOAD_LENGTH: number; FIELDS: MavField[] };
+    const bytes = new Uint8Array([
+      ...tlogRecord(1_000_000, CL, { command: 176 }), // DO_SET_MODE
+      ...tlogRecord(1_500_000, CI, { command: 192, frame: 3 }), // DO_REPOSITION
+      ...tlogRecord(2_000_000, CL, { command: 400 }), // COMPONENT_ARM_DISARM
+    ]);
+    const log = await parseTlog(new MemorySource('t.tlog', bytes));
+
+    expect(log.commands.map((c) => [c.time, c.name])).toEqual([
+      [1_000_000, 'DO_SET_MODE'],
+      [1_500_000, 'DO_REPOSITION'],
+      [2_000_000, 'COMPONENT_ARM_DISARM'],
+    ]);
+  });
+
+  it('names a command the dialect does not know by its id', async () => {
+    const CL = common.CommandLong as unknown as { MSG_ID: number; PAYLOAD_LENGTH: number; FIELDS: MavField[] };
+    const bytes = new Uint8Array([...tlogRecord(1_000_000, CL, { command: 64000 })]);
+    const log = await parseTlog(new MemorySource('t.tlog', bytes));
+
+    expect(log.commands).toEqual([{ time: 1_000_000, id: 64000, name: 'MAV_CMD 64000' }]);
+  });
+
+  // A GCS polls with these all session long; on a real log they outnumber the
+  // commands aimed at the vehicle several hundred to one.
+  it('leaves out the commands that only set the telemetry link up', async () => {
+    const CL = common.CommandLong as unknown as { MSG_ID: number; PAYLOAD_LENGTH: number; FIELDS: MavField[] };
+    const bytes = new Uint8Array([
+      ...tlogRecord(1_000_000, CL, { command: 511 }), // SET_MESSAGE_INTERVAL
+      ...tlogRecord(1_100_000, CL, { command: 512 }), // REQUEST_MESSAGE
+      ...tlogRecord(1_200_000, CL, { command: 520 }), // REQUEST_AUTOPILOT_CAPABILITIES
+      ...tlogRecord(1_300_000, CL, { command: 176 }), // DO_SET_MODE
+    ]);
+    const log = await parseTlog(new MemorySource('t.tlog', bytes));
+
+    expect(log.commands.map((c) => c.name)).toEqual(['DO_SET_MODE']);
+  });
+
+  it('collapses a command that arrives twice on one timestamp', async () => {
+    const CL = common.CommandLong as unknown as { MSG_ID: number; PAYLOAD_LENGTH: number; FIELDS: MavField[] };
+    const bytes = new Uint8Array([
+      // Two links delivering the same pair of commands at one instant.
+      ...tlogRecord(1_000_000, CL, { command: 176 }),
+      ...tlogRecord(1_000_000, CL, { command: 400 }),
+      ...tlogRecord(1_000_000, CL, { command: 176 }),
+      ...tlogRecord(1_000_000, CL, { command: 400 }),
+    ]);
+    const log = await parseTlog(new MemorySource('t.tlog', bytes));
+
+    expect(log.commands.map((c) => c.name)).toEqual(['DO_SET_MODE', 'COMPONENT_ARM_DISARM']);
+  });
+
+  // Two links with unequal latency deliver the same frame either side of a
+  // later one, so the copies are not adjacent in the stream even though they
+  // share an instant.
+  it('collapses a command duplicated across an intervening timestamp', async () => {
+    const CL = common.CommandLong as unknown as { MSG_ID: number; PAYLOAD_LENGTH: number; FIELDS: MavField[] };
+    const bytes = new Uint8Array([
+      ...tlogRecord(1_000_000, CL, { command: 176 }),
+      ...tlogRecord(2_000_000, CL, { command: 400 }),
+      ...tlogRecord(1_000_000, CL, { command: 176 }), // the slow link's copy
+    ]);
+    const log = await parseTlog(new MemorySource('t.tlog', bytes));
+
+    expect(log.commands.map((c) => [c.time, c.name])).toEqual([
+      [1_000_000, 'DO_SET_MODE'],
+      [2_000_000, 'COMPONENT_ARM_DISARM'],
+    ]);
+  });
+
+  it('keeps only the first attempt when a GCS resends an unacknowledged command', async () => {
+    const CL = common.CommandLong as unknown as { MSG_ID: number; PAYLOAD_LENGTH: number; FIELDS: MavField[] };
+    const bytes = new Uint8Array([
+      ...tlogRecord(1_000_000, CL, { command: 400, confirmation: 0 }),
+      ...tlogRecord(1_050_000, CL, { command: 400, confirmation: 1 }),
+      ...tlogRecord(1_100_000, CL, { command: 400, confirmation: 2 }),
+      // A fresh send of the same command later is its own event, not a retry.
+      ...tlogRecord(9_000_000, CL, { command: 400, confirmation: 0 }),
+    ]);
+    const log = await parseTlog(new MemorySource('t.tlog', bytes));
+
+    expect(log.commands.map((c) => c.time)).toEqual([1_000_000, 9_000_000]);
+  });
+
+  // MISSION_CURRENT is streamed at the telemetry rate, so only the instants
+  // where seq actually moves are events worth marking.
+  it('records a mission step only where MISSION_CURRENT changes seq', async () => {
+    const MC = common.MissionCurrent as unknown as { MSG_ID: number; PAYLOAD_LENGTH: number; FIELDS: MavField[] };
+    const bytes = new Uint8Array([
+      ...tlogRecord(1_000_000, MC, { seq: 1 }),
+      ...tlogRecord(1_100_000, MC, { seq: 1 }),
+      ...tlogRecord(1_200_000, MC, { seq: 2 }),
+      ...tlogRecord(1_300_000, MC, { seq: 2 }),
+      ...tlogRecord(1_400_000, MC, { seq: 3 }),
+      // A restarted plan revisits an index it has already passed; that is a step
+      // of its own, not a duplicate.
+      ...tlogRecord(1_500_000, MC, { seq: 1 }),
+    ]);
+    const log = await parseTlog(new MemorySource('t.tlog', bytes));
+
+    expect(log.missionSteps).toEqual([
+      { time: 1_000_000, seq: 1 },
+      { time: 1_200_000, seq: 2 },
+      { time: 1_400_000, seq: 3 },
+      { time: 1_500_000, seq: 1 },
+    ]);
+  });
+
+  // The message series are sorted by the builder for this reason already; the
+  // event lists have to keep the same promise, since the plot lays their labels
+  // out left to right and drops any that arrives behind the last one placed.
+  it('puts commands and mission steps in time order when the stream is not', async () => {
+    const CL = common.CommandLong as unknown as { MSG_ID: number; PAYLOAD_LENGTH: number; FIELDS: MavField[] };
+    const MC = common.MissionCurrent as unknown as { MSG_ID: number; PAYLOAD_LENGTH: number; FIELDS: MavField[] };
+    const bytes = new Uint8Array([
+      ...tlogRecord(2_000_000, CL, { command: 176 }), // DO_SET_MODE
+      ...tlogRecord(1_000_000, CL, { command: 400 }), // COMPONENT_ARM_DISARM, logged earlier
+      ...tlogRecord(2_500_000, MC, { seq: 5 }),
+      ...tlogRecord(1_500_000, MC, { seq: 2 }),
+    ]);
+    const log = await parseTlog(new MemorySource('t.tlog', bytes));
+
+    expect(log.commands.map((c) => c.time)).toEqual([1_000_000, 2_000_000]);
+    expect(log.commands.map((c) => c.name)).toEqual(['COMPONENT_ARM_DISARM', 'DO_SET_MODE']);
+    expect(log.missionSteps).toEqual([
+      { time: 1_500_000, seq: 2 },
+      { time: 2_500_000, seq: 5 },
+    ]);
   });
 
   it('sorts a message series whose wall-clock timestamps arrive out of order', async () => {

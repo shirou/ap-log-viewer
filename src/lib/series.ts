@@ -1,11 +1,26 @@
 // Small helpers over the columnar log model.
 
-/** Index of the last sample whose time <= t (binary search on a sorted array). */
+import { formatElapsed } from './format.ts';
+
+/**
+ * Index of the last sample whose time <= t (binary search on a sorted array).
+ *
+ * Empty gives -1; a `t` before the first sample clamps to 0, since every caller
+ * either guards that case or wants the nearest end.
+ *
+ * The shortcut below tests `<`, not `<=`, and the difference is the whole
+ * contract: where the first samples share a timestamp and `t` is exactly it,
+ * "last at or before" is the end of that run, not index 0. Answering 0 there
+ * silently shortened every window whose right edge landed on a duplicated first
+ * stamp — and runs of equal timestamps are ordinary here, because a message with
+ * no time column inherits the last stamp seen. `t >= times[hi]` needs no such
+ * care: hi is already the last of any run at that end.
+ */
 export function searchSortedLE(times: ArrayLike<number>, t: number): number {
   let lo = 0;
   let hi = times.length - 1;
   if (hi < 0) return -1;
-  if (t <= times[0]) return 0;
+  if (t < times[0]) return 0;
   if (t >= times[hi]) return hi;
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
@@ -122,11 +137,13 @@ export function rangeValueAtX(
   return Math.min(max, Math.max(min, v));
 }
 
+/**
+ * Playhead / message readout: `m:ss.s`, or `h:mm:ss.s` once past an hour.
+ *
+ * Negative input reads as zero — this measures from the log's start, and the
+ * only way to be handed less than that is a rounding wobble at the very
+ * beginning, which should read 0:00.0 rather than -0:00.0.
+ */
 export function formatDuration(microFromStart: number): string {
-  // Round to the displayed precision *before* splitting into minutes and
-  // seconds. Splitting first lets the seconds round up to 60 without carrying,
-  // so every minute boundary flashed "0:60.0" instead of "1:00.0".
-  const tenths = Math.round(Math.max(0, microFromStart) / 1e5);
-  const m = Math.floor(tenths / 600);
-  return `${m}:${((tenths - m * 600) / 10).toFixed(1).padStart(4, '0')}`;
+  return formatElapsed(Math.max(0, microFromStart) / 1e6, 1);
 }

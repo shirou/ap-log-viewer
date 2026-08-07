@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import type uPlot from 'uplot';
 import { useUplot } from '../../hooks/useUplot.ts';
+import { elapsedTicks } from '../../lib/format.ts';
 import { PALETTES, cssVar } from '../../lib/plotTheme.ts';
 import type { Theme } from '../../store/logStore.ts';
 
@@ -66,7 +67,8 @@ export default function IntervalBrush({ time, values, startTime, theme, range, o
           {
             stroke: cssVar('--plot-axis', '#8290a3'),
             grid: { stroke: cssVar('--plot-grid', '#2a334060') },
-            values: (_u, vals) => vals.map((v) => `${v}s`),
+            values: (_u, vals, _axisIdx, _foundSpace, foundIncr) => elapsedTicks(vals, foundIncr),
+            space: 70,
           },
           { show: false },
         ],

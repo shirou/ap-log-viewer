@@ -6,7 +6,7 @@ import { alignAngles, getColumn, medianStep, resampleLinear, scaled, unwrapAngle
 import { rangeIndices } from '../../lib/series.ts';
 import { stepMetrics, trackingMetrics } from '../../lib/tracking.ts';
 import { PALETTES, cssVar } from '../../lib/plotTheme.ts';
-import { fmtNum } from '../../lib/format.ts';
+import { elapsedTicks, fmtNum } from '../../lib/format.ts';
 import { useUplot } from '../../hooks/useUplot.ts';
 
 interface Props {
@@ -124,7 +124,9 @@ export default function TrackingAnalysis({ range }: Props) {
           {
             stroke: cssVar('--plot-axis', '#8290a3'),
             grid: { stroke: cssVar('--plot-grid', '#2a334060') },
-            values: (_u: uPlot, vals: number[]) => vals.map((v) => `${v}s`),
+            values: (_u: uPlot, vals: number[], _axisIdx: number, _foundSpace: number, foundIncr: number) =>
+              elapsedTicks(vals, foundIncr),
+            space: 70,
           },
           { stroke: cssVar('--plot-axis', '#8290a3'), grid: { stroke: cssVar('--plot-grid', '#2a334060') } },
         ],

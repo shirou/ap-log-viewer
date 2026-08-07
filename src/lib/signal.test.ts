@@ -10,6 +10,8 @@ function logOf(messages: Record<string, MessageSeries>): LogData {
     params: {},
     modes: [],
     texts: [],
+    commands: [],
+    missionSteps: [],
     trajectory: {
       time: new Float64Array(0),
       lat: new Float64Array(0),
@@ -39,6 +41,18 @@ describe('rangeIndices', () => {
     expect(rangeIndices(t, 30, 10)).toEqual([0, 0]);
     expect(rangeIndices(t, 12, 18)).toEqual([0, 0]);
     expect(rangeIndices(new Float64Array(0), 0, 10)).toEqual([0, 0]);
+  });
+  // Regression: searchSortedLE short-circuited on `t <= times[0]` and answered
+  // with index 0, so a window ending exactly on a duplicated *first* stamp kept
+  // only the first of the run and silently shortened every analysis window that
+  // began there. Interior and trailing runs were already right, which is why it
+  // went unnoticed.
+  it('includes every sample of a leading duplicate-timestamp run', () => {
+    const head = new Float64Array([5, 5, 5, 20]);
+    expect(rangeIndices(head, 5, 5)).toEqual([0, 3]);
+    expect(rangeIndices(head, 0, 5)).toEqual([0, 3]);
+    expect(rangeIndices(head, 5, 20)).toEqual([0, 4]);
+    expect(rangeIndices(new Float64Array([5, 5, 5]), 5, 5)).toEqual([0, 3]);
   });
   it('includes every sample of an interior duplicate-timestamp run', () => {
     // A message with no time column inherits the last stamp, so runs are real.

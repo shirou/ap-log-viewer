@@ -55,6 +55,44 @@ export interface TextMessage {
   severity?: number;
 }
 
+/**
+ * A MAVLink command as it was sent to the vehicle (COMMAND_LONG / COMMAND_INT).
+ *
+ * Only telemetry logs carry these: a .bin is written by the vehicle and records
+ * what it *did*, not what it was asked to do, so `LogData.commands` is empty for
+ * that source.
+ *
+ * Link housekeeping (REQUEST_*, SET_MESSAGE_INTERVAL) and a GCS's retries of an
+ * unacknowledged command are left out — see `isLinkSetup` in the tlog parser for
+ * why the raw stream is unusable as an annotation.
+ */
+export interface CommandEvent {
+  time: number; // microseconds
+  /** MAV_CMD id. */
+  id: number;
+  /** MAV_CMD name (e.g. "DO_SET_MODE"), or the bare id when it is unknown. */
+  name: string;
+}
+
+/**
+ * The instant the vehicle moved on to a new item of its flight plan: a tlog's
+ * MISSION_CURRENT changing `seq`, or a .bin's `MISE` record.
+ *
+ * Not a command — nobody sent this, it is the vehicle reporting where it has got
+ * to — which is why it is kept apart from `CommandEvent` and drawn as the
+ * quieter of the two annotations. `seq` can go backwards: a plan that is
+ * restarted or that loops through a DO_JUMP revisits indices it has already
+ * passed, and each of those is its own step.
+ *
+ * `MISE` arrived in ArduPilot 4.6, so an older .bin yields none of these even
+ * though it flew a mission.
+ */
+export interface MissionStep {
+  time: number; // microseconds
+  /** Mission sequence index the vehicle moved to. */
+  seq: number;
+}
+
 export interface LogData {
   source: 'bin' | 'tlog';
   /** Message type name -> series. */
@@ -62,6 +100,10 @@ export interface LogData {
   params: Record<string, number>;
   modes: ModeChange[];
   texts: TextMessage[];
+  /** Commands sent to the vehicle, in time order. Empty for .bin logs. */
+  commands: CommandEvent[];
+  /** Flight-plan progress, in time order. */
+  missionSteps: MissionStep[];
   trajectory: Trajectory;
   /** Planned flight path, ordered by `seq`. Empty when the log carries none. */
   mission: Waypoint[];

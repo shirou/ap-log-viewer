@@ -11,10 +11,10 @@
 import { Buffer } from 'buffer';
 import { minimal, common, ardupilotmega } from 'mavlink-mappings';
 import { DESERIALIZERS } from 'node-mavlink/dist/lib/serialization.js';
-import type { LogData, ModeChange, TextMessage } from '../model/log.ts';
+import type { CommandEvent, LogData, MissionStep, ModeChange, TextMessage } from '../model/log.ts';
 import type { LogSource } from './source.ts';
 import type { ParseOptions } from './dataflash.ts';
-import { LogBuilder, extractTrajectory, type ColumnDef } from './columnar.ts';
+import { LogBuilder, extractTrajectory, normalizeEvents, type ColumnDef } from './columnar.ts';
 import { MissionCollector } from './mission.ts';
 
 // mavlink-mappings references the Node global `Buffer`; provide the polyfill.
@@ -73,16 +73,25 @@ export async function parseTlog(source: LogSource, opts: ParseOptions = {}): Pro
 
   const builder = new LogBuilder();
   const columnsCache = new Map<number, ColumnDef[]>();
-  const params: Record<string, number> = {};
-  const modes: ModeChange[] = [];
-  const texts: TextMessage[] = [];
+  // Everything pulled out of the stream that is not just another column, kept in
+  // one bag so `extractSpecial` needs a single parameter rather than one per
+  // collection (mirrors ParseState in the DataFlash parser).
+  const special: Special = {
+    params: {},
+    modes: [],
+    texts: [],
+    commands: [],
+    missionSteps: [],
+    lastMode: '',
+    lastSeq: null,
+  };
+  const { params, modes, texts } = special;
   // MISSION_ITEM_INT is the current form and MISSION_ITEM the deprecated one;
   // a session can carry both, so collect them apart and prefer the int form.
   const missionInt = new MissionCollector();
   const missionFloat = new MissionCollector();
   let minTime = Infinity;
   let maxTime = -Infinity;
-  let lastMode = '';
 
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let offset = 0;
@@ -125,7 +134,7 @@ export async function parseTlog(source: LogSource, opts: ParseOptions = {}): Pro
           columnsCache.set(msgid, columns);
         }
         builder.push(msgid, clazz.MSG_NAME, columns, msg, ts);
-        lastMode = extractSpecial(clazz.MSG_NAME, msg, ts, params, modes, texts, lastMode);
+        extractSpecial(special, clazz.MSG_NAME, msg, ts);
         if (clazz.MSG_NAME === 'MISSION_ITEM_INT') addMissionItem(missionInt, msg, 1e-7);
         else if (clazz.MSG_NAME === 'MISSION_ITEM') addMissionItem(missionFloat, msg, 1);
         else if (clazz.MSG_NAME === 'MISSION_COUNT' && isFlightPlan(msg)) {
@@ -174,12 +183,21 @@ export async function parseTlog(source: LogSource, opts: ParseOptions = {}): Pro
 
   const mission = missionInt.finalize();
 
+  // Consumers are promised time order, and the plot's marker labels are laid out
+  // left to right and silently drop any that arrives behind the last one placed.
+  // Two commands sent together are separate events, so the same instant is only
+  // a repeat when the MAV_CMD matches too.
+  const commands = normalizeEvents(special.commands, (c) => c.id);
+  const missionSteps = normalizeEvents(special.missionSteps, (s) => s.seq);
+
   return {
     source: 'tlog',
     messages,
     params,
     modes,
     texts,
+    commands,
+    missionSteps,
     trajectory,
     mission: mission.length ? mission : missionFloat.finalize(),
     startTime: minTime,
@@ -237,26 +255,66 @@ function columnsFor(clazz: MavClass, msg: Record<string, unknown>): ColumnDef[] 
   return cols;
 }
 
-function extractSpecial(
-  name: string,
-  msg: Record<string, unknown>,
-  time: number,
-  params: Record<string, number>,
-  modes: ModeChange[],
-  texts: TextMessage[],
-  lastMode: string,
-): string {
+interface Special {
+  params: Record<string, number>;
+  modes: ModeChange[];
+  texts: TextMessage[];
+  commands: CommandEvent[];
+  missionSteps: MissionStep[];
+  /** Last mode label pushed, so a repeated HEARTBEAT does not log a change. */
+  lastMode: string;
+  /** Last MISSION_CURRENT seq seen; null before the first one. */
+  lastSeq: number | null;
+}
+
+/**
+ * MAV_CMD id -> name, for labelling command markers.
+ *
+ * The enum object carries both directions (name -> id and id -> name), so the
+ * numeric keys are the reverse map. ArduPilot's dialect adds vendor commands on
+ * top of the common set, and its own table repeats the common entries, so
+ * layering them cannot lose one.
+ */
+const MAV_CMD_NAMES: Record<number, string> = (() => {
+  const out: Record<number, string> = {};
+  for (const table of [common.MavCmd, ardupilotmega.MavCmd] as unknown as Record<string, unknown>[]) {
+    for (const [key, value] of Object.entries(table ?? {})) {
+      const id = Number(key);
+      if (Number.isInteger(id) && typeof value === 'string') out[id] = value;
+    }
+  }
+  return out;
+})();
+
+/**
+ * True for commands that negotiate the telemetry link rather than ask the
+ * vehicle to do something.
+ *
+ * A GCS polls constantly — REQUEST_MESSAGE and SET_MESSAGE_INTERVAL are how it
+ * sets up and tops up its streams — and on a real session they outnumber the
+ * commands a reader cares about by a couple of orders of magnitude. One hour of
+ * a survey boat's log holds 2030 commands, of which six were aimed at the
+ * vehicle; marking all of them would bury those six under a wall of lines.
+ *
+ * Matched by name rather than by a list of ids so the whole REQUEST_* family is
+ * covered, including any the dialect gains later.
+ */
+function isLinkSetup(name: string): boolean {
+  return name.startsWith('REQUEST_') || name.endsWith('MESSAGE_INTERVAL');
+}
+
+function extractSpecial(st: Special, name: string, msg: Record<string, unknown>, time: number): void {
   switch (name) {
     case 'PARAM_VALUE': {
       const id = msg['paramId'];
       const val = msg['paramValue'];
-      if (typeof id === 'string' && typeof val === 'number') params[id] = val;
+      if (typeof id === 'string' && typeof val === 'number') st.params[id] = val;
       break;
     }
     case 'STATUSTEXT': {
       const text = msg['text'];
       if (typeof text === 'string' && text.length) {
-        texts.push({ time, text, severity: typeof msg['severity'] === 'number' ? (msg['severity'] as number) : undefined });
+        st.texts.push({ time, text, severity: typeof msg['severity'] === 'number' ? (msg['severity'] as number) : undefined });
       }
       break;
     }
@@ -264,13 +322,46 @@ function extractSpecial(
       const custom = msg['customMode'];
       if (typeof custom === 'number') {
         const label = `Mode ${custom}`;
-        if (label !== lastMode) {
-          modes.push({ time, mode: label });
-          return label;
+        if (label !== st.lastMode) {
+          st.modes.push({ time, mode: label });
+          st.lastMode = label;
         }
       }
       break;
     }
+    // A command as it was sent to the vehicle. COMMAND_ACK is deliberately not
+    // collected: the request is the event a reader is looking for, and pairing
+    // each one with its reply would double every marker on the plot.
+    case 'COMMAND_LONG':
+    case 'COMMAND_INT': {
+      const id = numberFrom(msg, 'command');
+      if (!Number.isFinite(id)) break;
+      // Not `name`: that parameter holds the *message* type, and shadowing it
+      // here would leave two different names one word apart.
+      const cmdName = MAV_CMD_NAMES[id] ?? `MAV_CMD ${id}`;
+      if (isLinkSetup(cmdName)) break;
+      // A GCS resends an unacknowledged COMMAND_LONG with a rising
+      // `confirmation`, so a lost ack shows up here as a burst of identical
+      // commands microseconds apart. Only the first attempt is the event.
+      // (COMMAND_INT has no such field, so this reads NaN and does not apply.)
+      const retry = numberFrom(msg, 'confirmation');
+      if (Number.isFinite(retry) && retry > 0) break;
+      // A frame arriving twice over a dual link is collapsed by normalizeEvents
+      // once the list is sorted, not here: the copies need not be adjacent in
+      // the stream, so nothing at this point can reliably see them as a pair.
+      st.commands.push({ time, id, name: cmdName });
+      break;
+    }
+    // Where the vehicle has got to in its plan. This is streamed at the
+    // telemetry rate — 14400 records over an hour on a real log — so only the
+    // instants where `seq` actually moves are events. The first one is kept:
+    // it is where the plan started running.
+    case 'MISSION_CURRENT': {
+      const seq = numberFrom(msg, 'seq');
+      if (!Number.isFinite(seq) || seq === st.lastSeq) break;
+      st.lastSeq = seq;
+      st.missionSteps.push({ time, seq });
+      break;
+    }
   }
-  return lastMode;
 }
