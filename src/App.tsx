@@ -7,6 +7,7 @@ import Timeline from './components/Timeline.tsx';
 import FieldTree from './components/FieldTree.tsx';
 import ParamsTable from './components/ParamsTable.tsx';
 import MessagesLog from './components/MessagesLog.tsx';
+import PlotDownload from './components/PlotDownload.tsx';
 import AnalysisModal from './components/AnalysisModal.tsx';
 
 type Tab = 'fields' | 'params' | 'messages';
@@ -90,6 +91,9 @@ export default function App() {
         >
           {theme === 'dark' ? '☀' : '☾'}
         </button>
+        {/* Actions on the log itself, in the order a reader reaches for them:
+            take a piece of it away, look at a piece of it, open a different one. */}
+        {ready && <PlotDownload />}
         {ready && <button onClick={() => setAnalysisOpen(true)}>Analysis</button>}
         {ready && <button onClick={reset}>Open another log</button>}
       </header>

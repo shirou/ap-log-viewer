@@ -7,7 +7,6 @@ import { assignAxes, extentOf, type AxisAssignment, type AxisSide, type Col } fr
 import { nearestSampleIndex } from '../lib/series.ts';
 import { elapsedTicks, formatElapsed } from '../lib/format.ts';
 import { PALETTES, cssVar } from '../lib/plotTheme.ts';
-import PlotDownload from './PlotDownload.tsx';
 
 // How long the cursor must rest before the value tooltip appears. Without this
 // delay the tooltip would flicker on every pixel of mouse movement.
@@ -750,7 +749,6 @@ export default function PlotPanel() {
             ⤢ Reset
           </button>
         )}
-        {selectedFields.length > 0 && <PlotDownload />}
         {/* Offered only when the log has commands to show: a .bin never does,
             and a dead toggle would read as "this log has none plotted" rather
             than "this kind of log cannot carry them". */}

@@ -47,9 +47,10 @@ map panel rather than silently dropped.
 ## Downloading the displayed window
 
 Drag across the time series to zoom into a stretch of the flight, then use
-`⤓ Download window` in the plot header to take just that stretch away. The
-control stays inert until you have actually zoomed — a window nobody narrowed is
-the whole log, and handing that back under a new name helps nobody.
+`⤓ Download window` in the header to take just that stretch away. The control
+stays inert until you have actually zoomed — a window nobody narrowed is the
+whole log, and handing that back under a new name helps nobody — and its tooltip
+says which of the two is stopping it.
 
 Two formats:
 

@@ -1137,15 +1137,17 @@ input[type="text"] {
 
 /* ---- Download the displayed window ---- */
 
-/* Dead but not gone. The title on this chip is the only place the reason it can
-   do nothing is written, and `disabled` would hide it from the pointer and from
-   the accessibility tree both — a disabled control receives no pointer events,
-   so no tooltip, and takes no focus, so nothing announces it. */
-.chip[aria-disabled='true'] {
+/* Dead but not gone. The title on such a button is the only place the reason it
+   can do nothing is written, and `disabled` would hide it from the pointer and
+   from the accessibility tree both — a disabled control receives no pointer
+   events, so no tooltip, and takes no focus, so nothing announces it. Written
+   against `button` rather than one class so it holds wherever that trick is
+   used. */
+button[aria-disabled='true'] {
   opacity: 0.5;
   cursor: default;
 }
-.chip[aria-disabled='true']:hover {
+button[aria-disabled='true']:hover {
   border-color: var(--border);
 }
 
