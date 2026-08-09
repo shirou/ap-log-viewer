@@ -7,6 +7,7 @@ import { assignAxes, extentOf, type AxisAssignment, type AxisSide, type Col } fr
 import { nearestSampleIndex } from '../lib/series.ts';
 import { elapsedTicks, formatElapsed } from '../lib/format.ts';
 import { PALETTES, cssVar } from '../lib/plotTheme.ts';
+import PlotDownload from './PlotDownload.tsx';
 
 // How long the cursor must rest before the value tooltip appears. Without this
 // delay the tooltip would flicker on every pixel of mouse movement.
@@ -258,6 +259,27 @@ function drawMissionSteps(u: uPlot, marks: Mark[], stroke: string, halo: string)
   ctx.restore();
 }
 
+/**
+ * The x window in seconds when the plot is actually zoomed, otherwise null.
+ *
+ * Un-zoomed, uPlot leaves `scales.x` sitting on the data extremes, so the numbers
+ * alone cannot say whether the reader narrowed anything. The x scale's default
+ * range is `snapNumX`, which — unlike the y scales — adds no padding, so the
+ * comparison against the data ends is exact.
+ *
+ * Shared by the teardown that carries a zoom across a rebuild and the hook that
+ * reports the window to the store, so the two can never disagree about what
+ * counts as zoomed.
+ */
+function zoomedSeconds(u: uPlot): { min: number; max: number } | null {
+  const { min, max } = u.scales.x;
+  const data = u.data[0];
+  if (!data || data.length === 0 || min == null || max == null) return null;
+  const first = data[0] as number;
+  const last = data[data.length - 1] as number;
+  return min > first || max < last ? { min, max } : null;
+}
+
 /** A tooltip cell. Text goes in as text, never as markup — see showTip. */
 function span(className: string, text: string): HTMLSpanElement {
   const el = document.createElement('span');
@@ -353,6 +375,10 @@ export default function PlotPanel() {
   const displayTime = useLogStore(selectDisplayTime);
   const setCursorTime = useLogStore((s) => s.setCursorTime);
   const setHoverTime = useLogStore((s) => s.setHoverTime);
+  // Written, never read here: PlotDownload subscribes to the result instead, so
+  // a zoom re-renders that component and leaves this one — and the uPlot instance
+  // it owns — alone.
+  const setViewRange = useLogStore((s) => s.setViewRange);
   const theme = useLogStore((s) => s.theme);
   const palette = PALETTES[theme];
 
@@ -547,6 +573,32 @@ export default function PlotPanel() {
         })),
       ],
       hooks: {
+        // Report the window on screen, so the download control can offer it.
+        // Fires once per scale that actually changed, which includes y and y2
+        // autoscaling — hence the key test — and once on the first commit.
+        //
+        // Nothing here may call back into uPlot: this runs from inside _commit,
+        // where a setScale would queue a commit the one in progress then drops
+        // (the same trap the carried zoom below works around). Writing to the
+        // store is safe because the control that reads it is a separate
+        // component, so nothing here re-renders.
+        setScale: [
+          (u, key) => {
+            if (key !== 'x') return;
+            const z = zoomedSeconds(u);
+            if (!z) return setViewRange(null);
+            // Back to absolute microseconds, and rounded here because this is
+            // where float seconds stop being float: a dragged edge is an arbitrary
+            // value out of posToVal, rangeIndices compares both ends inclusively,
+            // and the store's dedup compares the numbers — two drags landing on
+            // the same microsecond should not count as a new window.
+            // AnalysisModal.setBound rounds for the same reason.
+            setViewRange([
+              Math.round(log.startTime + z.min * 1e6),
+              Math.round(log.startTime + z.max * 1e6),
+            ]);
+          },
+        ],
         // Debounce the value tooltip: any cursor movement hides it and restarts
         // the timer, so it only surfaces once the pointer has settled.
         setCursor: [
@@ -643,21 +695,27 @@ export default function PlotPanel() {
       // un-zoomed, uPlot leaves scales.x sitting on the data extremes, and
       // replaying those over a series covering a different stretch of the
       // flight would silently crop it with nothing to show a zoom is in effect.
-      const { min, max } = u.scales.x;
-      const data = u.data[0];
-      const zoomed =
-        data.length > 0 &&
-        min != null &&
-        max != null &&
-        (min > (data[0] as number) || max < (data[data.length - 1] as number));
-      xViewRef.current = zoomed ? { loadId, min: min as number, max: max as number } : null;
+      const z = zoomedSeconds(u);
+      xViewRef.current = z ? { loadId, min: z.min, max: z.max } : null;
       u.destroy();
       plotRef.current = null;
       // Don't strand a preview if the plot goes away mid-hover (fields cleared,
       // theme switched); every view would keep showing that instant.
       setHoverTime(null);
     };
-  }, [built, log, loadId, commands, steps, setCursorTime, setHoverTime, palette]);
+  }, [built, log, loadId, commands, steps, setCursorTime, setHoverTime, setViewRange, palette]);
+
+  // With nothing selected there is no plot and no window, so the last one
+  // reported has to go — the download control would otherwise keep offering a
+  // range nothing on screen shows.
+  //
+  // Deliberately not done from the plot effect's teardown: that also runs before
+  // every *rebuild* (a new series, an axis flip, a theme switch), and the
+  // replacement plot only reports its window from a microtask, so clearing there
+  // would blink the control off and on again each time.
+  useEffect(() => {
+    if (selectedFields.length === 0) setViewRange(null);
+  }, [selectedFields.length, setViewRange]);
 
   // Toggling a layer only changes what the canvas draws, so redraw rather than
   // letting the flag rebuild the plot (which would also drop the zoom).
@@ -692,6 +750,7 @@ export default function PlotPanel() {
             ⤢ Reset
           </button>
         )}
+        {selectedFields.length > 0 && <PlotDownload />}
         {/* Offered only when the log has commands to show: a .bin never does,
             and a dead toggle would read as "this log has none plotted" rather
             than "this kind of log cannot carry them". */}

@@ -23,6 +23,29 @@ export function fmtPct(ratio: number, digits = 1): string {
 }
 
 /**
+ * A byte count for a file the reader is about to receive.
+ *
+ * Decimal units, not binary: this labels something their file manager will report
+ * next, and those count in decimal. One decimal place from kB up, because the
+ * number is never more precise than what it describes.
+ */
+export function fmtBytes(n: number): string {
+  if (!Number.isFinite(n)) return '—';
+  const neg = n < 0 ? '-' : '';
+  let v = Math.abs(n);
+  if (v < 1000) return `${neg}${v.toFixed(0)} B`;
+  const units = ['kB', 'MB', 'GB', 'TB'];
+  let i = -1;
+  // Step while the value still reads as at least 1000 of the current unit, so
+  // 999_999 becomes "1.0 MB" rather than "1000.0 kB".
+  do {
+    v /= 1000;
+    i++;
+  } while (v >= 999.95 && i < units.length - 1);
+  return `${neg}${v.toFixed(1)} ${units[i]}`;
+}
+
+/**
  * Elapsed seconds as a clock reading: `m:ss` up to an hour, `h:mm:ss` beyond it.
  *
  * Raw seconds are unreadable once a flight runs long — "2537s" has to be divided

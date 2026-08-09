@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { selectDisplayTime, useLogStore } from './logStore.ts';
+import { selectDisplayTime, selectExportWindow, useLogStore } from './logStore.ts';
 
 // No `log` is needed: with none loaded the time setters skip their clamping,
 // which keeps these focused on which instant the views end up rendering.
@@ -113,6 +113,71 @@ describe('axisOverride', () => {
 
     expect(overrides()).toEqual({ 'GPS.Alt': 1 });
     expect(useLogStore.getState().selectedFields).toEqual([ALT]);
+  });
+});
+
+describe('viewRange', () => {
+  const withLog = (startTime: number, endTime: number) =>
+    useLogStore.setState({
+      viewRange: null,
+      log: { messages: {}, trajectory: {} as never, startTime, endTime } as never,
+    });
+
+  it('clamps a window to the log it belongs to', () => {
+    withLog(1000, 5000);
+    useLogStore.getState().setViewRange([-50, 99999]);
+    expect(useLogStore.getState().viewRange).toEqual([1000, 5000]);
+  });
+
+  // Rebuilding the plot replays the carried zoom, so the same numbers arrive
+  // again. A fresh tuple would re-render the download control for nothing, and
+  // useSyncExternalStore compares selectExportWindow's result by identity.
+  it('keeps the same array when the numbers have not moved', () => {
+    withLog(0, 10_000);
+    const { setViewRange } = useLogStore.getState();
+    setViewRange([2000, 4000]);
+    const first = useLogStore.getState().viewRange;
+    setViewRange([2000, 4000]);
+    expect(useLogStore.getState().viewRange).toBe(first);
+  });
+
+  // What the plot reports when a zoom is undone. reset() writes the field
+  // directly, so it never exercises this path.
+  it('takes null back when the plot stops being zoomed', () => {
+    withLog(0, 10_000);
+    const { setViewRange } = useLogStore.getState();
+    setViewRange([2000, 4000]);
+    setViewRange(null);
+    expect(useLogStore.getState().viewRange).toBeNull();
+  });
+
+  it('is cleared when a different log is opened', () => {
+    withLog(0, 10_000);
+    useLogStore.getState().setViewRange([2000, 4000]);
+    useLogStore.getState().reset();
+    expect(useLogStore.getState().viewRange).toBeNull();
+    expect(useLogStore.getState().file).toBeNull();
+  });
+});
+
+describe('selectExportWindow', () => {
+  it('offers nothing while the plot is showing everything it has', () => {
+    useLogStore.setState({ viewRange: null });
+    expect(selectExportWindow(useLogStore.getState())).toBeNull();
+  });
+
+  // The identity is the point: see the selector's comment.
+  it('hands back the stored tuple itself, not a copy', () => {
+    const range: [number, number] = [2000, 4000];
+    useLogStore.setState({ viewRange: range });
+    expect(selectExportWindow(useLogStore.getState())).toBe(range);
+  });
+
+  it('offers nothing for a window with no width', () => {
+    useLogStore.setState({ viewRange: [2000, 2000] });
+    expect(selectExportWindow(useLogStore.getState())).toBeNull();
+    useLogStore.setState({ viewRange: [4000, 2000] });
+    expect(selectExportWindow(useLogStore.getState())).toBeNull();
   });
 });
 

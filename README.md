@@ -44,6 +44,38 @@ patterns instead store the geometry QGC regenerates them from, and so cannot be.
 Anything the file holds no usable waypoints for is counted and reported on the
 map panel rather than silently dropped.
 
+## Downloading the displayed window
+
+Drag across the time series to zoom into a stretch of the flight, then use
+`⤓ Download window` in the plot header to take just that stretch away. The
+control stays inert until you have actually zoomed — a window nobody narrowed is
+the whole log, and handing that back under a new name helps nobody.
+
+Two formats:
+
+- **Original `.tlog` / `.bin` bytes.** A copy of the file you opened, cut on
+  record boundaries, so it opens in Mission Planner, MAVExplorer or here. The
+  parts a cut would otherwise lose come across with it: a `.bin`'s format table
+  (without which nothing reads back at all), the unit tables, the flight plan,
+  the mode in force, and each parameter at the value it held when the window
+  opened. Those carried-in records are restamped to the window start, so the
+  slice reads as a recording of that window rather than of the whole session
+  with a gap in it.
+- **JSON, one array per field.** Every message type the window holds — including
+  ones you are not plotting and ones you dropped from memory — as columns that
+  read straight into pandas or `jq`. Only what was recorded *inside* the window,
+  so parameters and the flight plan can come out empty. Optionally gzipped.
+
+Every slice is reframed and checked against what the scan planned before you get
+it: byte-for-byte record counts per message type, no unaccounted bytes, and every
+timestamp inside the window. A cut that does not check out is refused rather than
+downloaded, and so is one that would come to more than 256 MB — assembling a
+slice costs a multiple of its own size, and running the tab out of memory would
+take the loaded log with it. A window worth cutting is nowhere near that: a
+23-second window of a 65 MB log comes to 1.4 MB.
+
+The cut happens in your browser. Nothing is uploaded.
+
 ## Stack
 
 - Frontend: React + Vite + TypeScript
@@ -58,6 +90,8 @@ map panel rather than silently dropped.
 ```
 src/parsers/      Log parsers (source / dataflash / tlog / worker) + mission extraction
                   (mission.ts) and standalone plan files (missionFile.ts)
+src/export/       Cutting the displayed window back out as a file (slicer / JSON / download)
+src/lib/          Pure helpers over the columnar model (series, signal, stats, formatting)
 src/components/   UI (Map / Plot / Timeline / FieldTree / ...)
 src/store/        zustand store
 cmd/server/       Go static file server

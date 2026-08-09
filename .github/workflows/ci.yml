@@ -1,0 +1,61 @@
+name: ci
+
+# Typecheck and unit tests on every push and pull request.
+#
+# release.yml already runs `npm test`, but only on a vX.Y.Z tag — by then a
+# regression has been merged and released. This is the gate that runs before a
+# change lands.
+#
+# Hardened the same way release.yml is, and pinned to the *same* action SHAs so
+# dependabot bumps both together. See that file for why each control is here.
+#
+# The egress allowlist is release.yml's minus what only publishing needs (asset
+# upload, the Go module proxy, sigstore). It fails closed, so a missing endpoint
+# breaks the run rather than leaking: if setup-node ever misses the runner's tool
+# cache and reaches for a Node tarball, add release-assets.githubusercontent.com.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions: {}                  # empty by default; this job needs nothing more
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true       # superseded pushes have nothing worth finishing
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04        # pinned, not ubuntu-latest
+    steps:
+      - uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            *.actions.githubusercontent.com:443
+            objects.githubusercontent.com:443
+            registry.npmjs.org:443
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          check-latest: false
+          package-manager-cache: false   # no shared cache (cache-poisoning)
+
+      # --ignore-scripts: a dependency's install hook is the cheapest place to
+      # run code in CI, and nothing here needs one.
+      - name: Install
+        run: npm ci --ignore-scripts
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test

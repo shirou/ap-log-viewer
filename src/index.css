@@ -1134,3 +1134,94 @@ input[type="text"] {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ---- Download the displayed window ---- */
+
+/* Dead but not gone. The title on this chip is the only place the reason it can
+   do nothing is written, and `disabled` would hide it from the pointer and from
+   the accessibility tree both — a disabled control receives no pointer events,
+   so no tooltip, and takes no focus, so nothing announces it. */
+.chip[aria-disabled='true'] {
+  opacity: 0.5;
+  cursor: default;
+}
+.chip[aria-disabled='true']:hover {
+  border-color: var(--border);
+}
+
+/* Wears .analysis-modal for its chrome — the backdrop, the header row, the close
+   button — and overrides only the size: this one is a short form, not a
+   workbench, and a 90vh sheet around four controls reads as a page that failed
+   to load. */
+.export-modal {
+  width: min(480px, 92vw);
+  height: auto;
+  max-height: 90vh;
+}
+
+/* An .interval-row without the bordered block it usually sits in. */
+.export-range {
+  margin: 0 0 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.export-formats {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.export-formats legend {
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.export-format {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 8px;
+  align-items: baseline;
+  cursor: pointer;
+}
+.export-format > input {
+  grid-row: span 2;
+}
+/* The consequence of the choice, under the choice: ".tlog" and ".json" alone are
+   not enough to decide between them. */
+.export-format .export-why {
+  grid-column: 2;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.export-format.disabled,
+.export-format.disabled .export-why {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.export-gzip {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+/* What the slice was checked against, so the reader has something better than
+   "probably fine" before passing the file on. */
+.export-result {
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.export-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0;
+}

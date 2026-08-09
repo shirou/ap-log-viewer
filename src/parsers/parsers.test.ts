@@ -1,98 +1,19 @@
 import { describe, it, expect } from 'vitest';
 import { common } from 'mavlink-mappings';
-import type { LogSource } from './source.ts';
 import { parseDataflash } from './dataflash.ts';
 import { parseTlog } from './tlog.ts';
-
-// An in-memory LogSource so tests don't depend on the browser Blob/File APIs.
-class MemorySource implements LogSource {
-  constructor(
-    readonly name: string,
-    private readonly bytes: Uint8Array,
-  ) {}
-  get size() {
-    return this.bytes.byteLength;
-  }
-  async read(range?: { start: number; end: number }) {
-    return range ? this.bytes.subarray(range.start, range.end) : this.bytes;
-  }
-}
-
-// ---- DataFlash (.bin) ----
-
-const HEAD1 = 0xa3;
-const HEAD2 = 0x95;
-
-function strBytes(s: string, len: number): number[] {
-  const out = new Array(len).fill(0);
-  for (let i = 0; i < Math.min(s.length, len); i++) out[i] = s.charCodeAt(i);
-  return out;
-}
-
-function fmtMessage(type: number, name: string, format: string, columns: string): number[] {
-  // FMT body layout: BBnNZ = Type, Length, Name(4), Format(16), Columns(64)
-  const bodySize = format.length === 0 ? 0 : sizeOf(format);
-  const length = 3 + bodySize;
-  return [
-    HEAD1, HEAD2, 0x80,
-    type,
-    length,
-    ...strBytes(name, 4),
-    ...strBytes(format, 16),
-    ...strBytes(columns, 64),
-  ];
-}
-
-function sizeOf(format: string): number {
-  const sizes: Record<string, number> = { Q: 8, L: 4, f: 4, B: 1, N: 16, n: 4, Z: 64, i: 4, I: 4, h: 2, H: 2 };
-  return [...format].reduce((a, c) => a + sizes[c], 0);
-}
-
-function gpsMessage(type: number, timeUS: number, lat: number, lon: number, alt: number): number[] {
-  const buf = new ArrayBuffer(3 + 20);
-  const dv = new DataView(buf);
-  const u = new Uint8Array(buf);
-  u[0] = HEAD1;
-  u[1] = HEAD2;
-  u[2] = type;
-  dv.setBigUint64(3, BigInt(timeUS), true);
-  dv.setInt32(11, Math.round(lat * 1e7), true);
-  dv.setInt32(15, Math.round(lon * 1e7), true);
-  dv.setFloat32(19, alt, true);
-  return [...u];
-}
-
-// A mission item in the shared log_Cmd layout. Lat/Lng use the `L` format char,
-// i.e. int32 degE7 that formatChars scales back to degrees while decoding.
-const CMD_FORMAT = 'QHHHffffLLfB';
-const CMD_COLUMNS = 'TimeUS,CTot,CNum,CId,Prm1,Prm2,Prm3,Prm4,Lat,Lng,Alt,Frame';
-
-function cmdMessage(
-  type: number,
-  opts: {
-    seq: number; total?: number; id?: number; alt?: number; timeUS?: number;
-    /** Degrees; written as degE7 the way the `L` format char expects. */
-    lat?: number; lon?: number;
-    /** Raw int32 written verbatim, for logs that declare Lat/Lng unscaled. */
-    latRaw?: number; lonRaw?: number;
-  },
-): number[] {
-  const buf = new ArrayBuffer(3 + sizeOf(CMD_FORMAT));
-  const dv = new DataView(buf);
-  const u = new Uint8Array(buf);
-  u[0] = HEAD1;
-  u[1] = HEAD2;
-  u[2] = type;
-  dv.setBigUint64(3, BigInt(opts.timeUS ?? 1_000_000), true);
-  dv.setUint16(11, opts.total ?? 0, true); // CTot
-  dv.setUint16(13, opts.seq, true); // CNum
-  dv.setUint16(15, opts.id ?? 16, true); // CId (16 = NAV_WAYPOINT)
-  dv.setInt32(33, opts.latRaw ?? Math.round((opts.lat ?? 0) * 1e7), true); // Lat (after Prm1..Prm4)
-  dv.setInt32(37, opts.lonRaw ?? Math.round((opts.lon ?? 0) * 1e7), true); // Lng
-  dv.setFloat32(41, opts.alt ?? 0, true); // Alt
-  dv.setUint8(45, 3); // Frame = MAV_FRAME_GLOBAL_RELATIVE_ALT
-  return [...u];
-}
+import {
+  CMD_COLUMNS,
+  CMD_FORMAT,
+  HEAD1,
+  HEAD2,
+  MemorySource,
+  cmdMessage,
+  fmtMessage,
+  gpsMessage,
+  tlogRecord,
+  type MavField,
+} from './testFixtures.ts';
 
 describe('parseDataflash', () => {
   it('parses a self-describing log and extracts trajectory', async () => {
@@ -345,39 +266,6 @@ describe('parseDataflash', () => {
 
 // Serialize a message payload using the class FIELDS metadata, then wrap it in a
 // MAVLink v2 frame prefixed with an 8-byte big-endian timestamp (tlog format).
-type MavField = { name: string; type: string; offset: number; size: number; length: number };
-
-function writeField(dv: DataView, off: number, type: string, value: number): void {
-  switch (type) {
-    case 'uint8_t': case 'char': dv.setUint8(off, value); break;
-    case 'int8_t': dv.setInt8(off, value); break;
-    case 'uint16_t': dv.setUint16(off, value, true); break;
-    case 'int16_t': dv.setInt16(off, value, true); break;
-    case 'uint32_t': dv.setUint32(off, value >>> 0, true); break;
-    case 'int32_t': dv.setInt32(off, value, true); break;
-    case 'float': dv.setFloat32(off, value, true); break;
-    default: break;
-  }
-}
-
-function tlogRecord(timestampUs: number, clazz: { MSG_ID: number; PAYLOAD_LENGTH: number; FIELDS: MavField[] }, values: Record<string, number>): number[] {
-  const plen = clazz.PAYLOAD_LENGTH;
-  const payload = new ArrayBuffer(plen);
-  const dv = new DataView(payload);
-  for (const f of clazz.FIELDS) {
-    if (f.name in values) writeField(dv, f.offset, f.type, values[f.name]);
-  }
-  const msgid = clazz.MSG_ID;
-  const frame = [
-    0xfd, plen, 0, 0, 0, 1, 1, msgid & 0xff, (msgid >> 8) & 0xff, (msgid >> 16) & 0xff,
-    ...new Uint8Array(payload),
-    0x00, 0x00, // crc (not validated by our parser)
-  ];
-  const ts = new ArrayBuffer(8);
-  new DataView(ts).setBigUint64(0, BigInt(timestampUs), false);
-  return [...new Uint8Array(ts), ...frame];
-}
-
 describe('parseTlog', () => {
   it('frames records, decodes messages and builds trajectory', async () => {
     const GPI = common.GlobalPositionInt as unknown as { MSG_ID: number; PAYLOAD_LENGTH: number; FIELDS: MavField[] };
