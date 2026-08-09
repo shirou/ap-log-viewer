@@ -7,6 +7,11 @@
 // `node-mavlink`'s top-level entry because it pulls in Node's stream/net/crypto;
 // instead we reuse only the pure DESERIALIZERS table plus a tiny re-implementation
 // of its field-decode loop.
+//
+// As in the DataFlash reader, the framing loop is exposed on its own as
+// `scanTlog` and `parseTlog` is one of its consumers; the other is the window
+// slicer (src/export). Sharing the loop is what keeps the two byte-for-byte in
+// agreement about where a frame ends and where the reader resyncs.
 
 import { Buffer } from 'buffer';
 import { minimal, common, ardupilotmega } from 'mavlink-mappings';
@@ -36,15 +41,102 @@ interface MavClass {
 }
 type Registry = Record<number, MavClass>;
 
-const REGISTRY: Registry = {
+export const REGISTRY: Registry = {
   ...(minimal.REGISTRY as unknown as Registry),
   ...(common.REGISTRY as unknown as Registry),
   ...(ardupilotmega.REGISTRY as unknown as Registry),
 };
 
-const V1_STX = 0xfe;
-const V2_STX = 0xfd;
+export const V1_STX = 0xfe;
+export const V2_STX = 0xfd;
 const V2_IFLAG_SIGNED = 0x01;
+
+/**
+ * One record as the reader framed it: the 8-byte stamp plus the MAVLink frame.
+ *
+ * Offsets are into the buffer handed to the visitor, which for a tlog is the
+ * whole file, so they double as absolute file offsets.
+ */
+export interface TlogFrame {
+  /** [start, end) is every byte of the record, stamp included. */
+  start: number;
+  end: number;
+  /** Microseconds since the UNIX epoch, from the 8-byte prefix. */
+  ts: number;
+  msgid: number;
+  payloadStart: number;
+  plen: number;
+}
+
+/**
+ * Called once per framed record, for every msgid — including ones the registry
+ * has no class for, which `parseTlog` skips but a byte slicer must still copy.
+ *
+ * The frame object is REUSED between calls; copy anything you need to keep.
+ */
+export type TlogVisitor = (f: TlogFrame, bytes: Uint8Array) => void;
+
+/**
+ * Frame every record in the source and hand each one to `visit`.
+ *
+ * Reads the whole file, as this parser always has. Chunking it would need the
+ * loop's bounds tightened first — the guard below admits `offset + 8 === len`
+ * and then reads the STX byte one past the end, which is harmless at EOF
+ * (undefined fails the test and the loop resyncs) but would eat the first byte
+ * of a stamp whose frame is in the next chunk.
+ */
+export async function scanTlog(source: LogSource, visit: TlogVisitor, opts: ParseOptions = {}): Promise<void> {
+  const bytes = await source.read();
+  const len = bytes.byteLength;
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  // Reused across records; see TlogVisitor.
+  const f: TlogFrame = { start: 0, end: 0, ts: 0, msgid: 0, payloadStart: 0, plen: 0 };
+  let offset = 0;
+  let lastProgress = 0;
+
+  while (offset + 8 <= len) {
+    const ts = Number(dv.getBigUint64(offset, false)); // microseconds, UNIX
+    const p = offset + 8;
+    const stx = bytes[p];
+    if (stx !== V1_STX && stx !== V2_STX) {
+      offset++; // resync
+      continue;
+    }
+    const plen = bytes[p + 1];
+    let payloadStart: number;
+    let msgid: number;
+    let frameEnd: number;
+    if (stx === V1_STX) {
+      payloadStart = p + 6;
+      msgid = bytes[p + 5];
+      frameEnd = p + 6 + plen + 2; // header + payload + crc
+    } else {
+      const incompat = bytes[p + 2];
+      payloadStart = p + 10;
+      msgid = bytes[p + 7] | (bytes[p + 8] << 8) | (bytes[p + 9] << 16);
+      frameEnd = p + 10 + plen + 2 + (incompat & V2_IFLAG_SIGNED ? 13 : 0);
+    }
+    if (frameEnd > len || payloadStart + plen > len) break; // truncated tail
+
+    f.start = offset;
+    f.end = frameEnd;
+    f.ts = ts;
+    f.msgid = msgid;
+    f.payloadStart = payloadStart;
+    f.plen = plen;
+    visit(f, bytes);
+
+    offset = frameEnd;
+
+    if (opts.onProgress) {
+      const ratio = offset / len;
+      if (ratio - lastProgress > 0.02) {
+        lastProgress = ratio;
+        opts.onProgress(ratio);
+      }
+    }
+  }
+}
 
 // Re-implementation of node-mavlink's MavLinkProtocol.data() field loop, using
 // the pure DESERIALIZERS table. Pads truncated MAVLink 2 payloads with zeros.
@@ -68,9 +160,6 @@ function deserialize(payload: Buffer, clazz: MavClass): Record<string, unknown> 
 }
 
 export async function parseTlog(source: LogSource, opts: ParseOptions = {}): Promise<LogData> {
-  const bytes = await source.read();
-  const len = bytes.byteLength;
-
   const builder = new LogBuilder();
   const columnsCache = new Map<number, ColumnDef[]>();
   // Everything pulled out of the stream that is not just another column, kept in
@@ -93,48 +182,23 @@ export async function parseTlog(source: LogSource, opts: ParseOptions = {}): Pro
   let minTime = Infinity;
   let maxTime = -Infinity;
 
-  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  let offset = 0;
-  let lastProgress = 0;
-
-  while (offset + 8 <= len) {
-    const ts = Number(dv.getBigUint64(offset, false)); // microseconds, UNIX
-    let p = offset + 8;
-    const stx = bytes[p];
-    if (stx !== V1_STX && stx !== V2_STX) {
-      offset++; // resync
-      continue;
-    }
-    const plen = bytes[p + 1];
-    let payloadStart: number;
-    let msgid: number;
-    let frameEnd: number;
-    if (stx === V1_STX) {
-      payloadStart = p + 6;
-      msgid = bytes[p + 5];
-      frameEnd = p + 6 + plen + 2; // header + payload + crc
-    } else {
-      const incompat = bytes[p + 2];
-      payloadStart = p + 10;
-      msgid = bytes[p + 7] | (bytes[p + 8] << 8) | (bytes[p + 9] << 16);
-      frameEnd = p + 10 + plen + 2 + (incompat & V2_IFLAG_SIGNED ? 13 : 0);
-    }
-    if (frameEnd > len || payloadStart + plen > len) break; // truncated tail
-
-    const clazz = REGISTRY[msgid];
-    if (clazz) {
-      const payload = Buffer.from(bytes.subarray(payloadStart, payloadStart + plen));
+  await scanTlog(
+    source,
+    (f, bytes) => {
+      const clazz = REGISTRY[f.msgid];
+      if (!clazz) return;
+      const payload = Buffer.from(bytes.subarray(f.payloadStart, f.payloadStart + f.plen));
       try {
         const msg = deserialize(payload, clazz);
-        if (ts < minTime) minTime = ts;
-        if (ts > maxTime) maxTime = ts;
-        let columns = columnsCache.get(msgid);
+        if (f.ts < minTime) minTime = f.ts;
+        if (f.ts > maxTime) maxTime = f.ts;
+        let columns = columnsCache.get(f.msgid);
         if (!columns) {
           columns = columnsFor(clazz, msg);
-          columnsCache.set(msgid, columns);
+          columnsCache.set(f.msgid, columns);
         }
-        builder.push(msgid, clazz.MSG_NAME, columns, msg, ts);
-        extractSpecial(special, clazz.MSG_NAME, msg, ts);
+        builder.push(f.msgid, clazz.MSG_NAME, columns, msg, f.ts);
+        extractSpecial(special, clazz.MSG_NAME, msg, f.ts);
         if (clazz.MSG_NAME === 'MISSION_ITEM_INT') addMissionItem(missionInt, msg, 1e-7);
         else if (clazz.MSG_NAME === 'MISSION_ITEM') addMissionItem(missionFloat, msg, 1);
         else if (clazz.MSG_NAME === 'MISSION_COUNT' && isFlightPlan(msg)) {
@@ -146,18 +210,9 @@ export async function parseTlog(source: LogSource, opts: ParseOptions = {}): Pro
       } catch {
         // ignore a malformed frame, keep scanning
       }
-    }
-
-    offset = frameEnd;
-
-    if (opts.onProgress) {
-      const ratio = offset / len;
-      if (ratio - lastProgress > 0.02) {
-        lastProgress = ratio;
-        opts.onProgress(ratio);
-      }
-    }
-  }
+    },
+    opts,
+  );
 
   const messages = builder.finalize();
   // GLOBAL_POSITION_INT/GPS_RAW_INT: lat/lon in degE7, alt in mm.

@@ -1,5 +1,33 @@
 import { describe, expect, it } from 'vitest';
-import { elapsedTicks, formatElapsed } from './format.ts';
+import { elapsedTicks, fmtBytes, formatElapsed } from './format.ts';
+
+describe('fmtBytes', () => {
+  it('leaves a small count in plain bytes', () => {
+    expect(fmtBytes(0)).toBe('0 B');
+    expect(fmtBytes(999)).toBe('999 B');
+  });
+
+  it('counts in decimal units, matching what a file manager will report', () => {
+    expect(fmtBytes(1000)).toBe('1.0 kB');
+    expect(fmtBytes(1_500_000)).toBe('1.5 MB');
+    expect(fmtBytes(2.5e9)).toBe('2.5 GB');
+  });
+
+  // "1000.0 kB" is a unit the reader then has to convert themselves.
+  it('carries to the next unit rather than printing 1000 of the current one', () => {
+    expect(fmtBytes(999_999)).toBe('1.0 MB');
+  });
+
+  it('keeps the sign, so a difference reads as one', () => {
+    expect(fmtBytes(-1500)).toBe('-1.5 kB');
+    expect(fmtBytes(-999)).toBe('-999 B');
+  });
+
+  it('reports a non-finite value as an em dash', () => {
+    expect(fmtBytes(NaN)).toBe('—');
+    expect(fmtBytes(Infinity)).toBe('—');
+  });
+});
 
 describe('formatElapsed', () => {
   it('reads as m:ss below an hour', () => {

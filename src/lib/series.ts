@@ -1,5 +1,6 @@
 // Small helpers over the columnar log model.
 
+import type { TimeWindow } from '../model/log.ts';
 import { formatElapsed } from './format.ts';
 
 /**
@@ -82,6 +83,19 @@ export function rangeIndices(time: ArrayLike<number>, t0: number, t1: number): [
   else while (i0 > 0 && time[i0 - 1] === t0) i0--;
   const i1 = searchSortedLE(time, t1) + 1; // exclusive: one past the last at-or-before
   return i0 < i1 ? [i0, i1] : [0, 0];
+}
+
+/**
+ * A pair of microsecond bounds as a window, rounded to the model's own resolution.
+ *
+ * Mostly a shape conversion: what reaches here is already integral, because the
+ * float seconds the plot deals in are rounded where they become microseconds (see
+ * PlotPanel's setScale hook). The rounding is repeated rather than assumed, since
+ * `rangeIndices` compares both ends inclusively and a fractional end would make
+ * whether a boundary sample counts depend on how the window was produced.
+ */
+export function quantizeWindow(startUs: number, endUs: number): TimeWindow {
+  return { startUs: Math.round(startUs), endUs: Math.round(endUs) };
 }
 
 export interface LatLngAlt {

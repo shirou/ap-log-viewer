@@ -60,6 +60,22 @@ export interface LogState {
   progress: number;
   error: string | null;
   fileName: string | null;
+  /**
+   * The file the current log was read from, kept so a window of it can be cut
+   * back out as original bytes.
+   *
+   * Costs nothing to hold: a File is a handle the OS hands out, not the bytes —
+   * the parse worker is already given this same object. With the only entry point
+   * being FileDropzone -> parseFile(File) this is non-null whenever a log is
+   * loaded; the null case is the LogSource seam's future remote sources (see
+   * src/parsers/source.ts), which is why readers have to handle it.
+   *
+   * A handle is not a snapshot: if the log is moved, deleted or rewritten after
+   * it was opened — pulling the SD card is the realistic one — reading it again
+   * fails, and that surfaces as a download error rather than something this can
+   * detect up front.
+   */
+  file: File | null;
   log: LogData | null;
   /** Increments on each loaded log; used as a stable remount key for the map. */
   loadId: number;
@@ -79,6 +95,21 @@ export interface LogState {
   selectedFields: FieldRef[];
   /** Fields pinned to a y axis by hand, keyed by fieldKey. Absent = automatic. */
   axisOverride: AxisOverrides;
+
+  /**
+   * The window the time-series plot is showing, absolute microseconds, or null
+   * when it is showing everything it has.
+   *
+   * Null covers both "no plot" and "not zoomed". Un-zoomed, uPlot leaves
+   * `scales.x` sitting on the data extremes, so the numbers alone cannot say
+   * whether the reader narrowed anything — PlotPanel makes that call and reports
+   * null when they did not. That is what makes this the answer to "is there a
+   * window worth offering", with no tolerance constant to pick.
+   *
+   * Written by PlotPanel from the x scale, which is float seconds since
+   * log.startTime; read through selectExportWindow.
+   */
+  viewRange: [number, number] | null;
 
   // Timeline / playback (cursorTime is the single source of truth, microseconds).
   cursorTime: number;
@@ -106,6 +137,8 @@ export interface LogState {
   toggleField: (ref: FieldRef) => void;
   /** Pin a plotted field to a y axis, or pass null to hand it back to the automatic split. */
   setAxisOverride: (key: string, side: AxisSide | null) => void;
+  /** Report the plot's window in absolute microseconds, or null when un-zoomed. */
+  setViewRange: (r: [number, number] | null) => void;
   setCursorTime: (t: number) => void;
   setHoverTime: (t: number | null) => void;
   setPlaying: (p: boolean) => void;
@@ -172,11 +205,30 @@ export const selectPreviewTime = (s: LogState): number | null => (s.playing ? nu
  */
 export const selectDisplayTime = (s: LogState): number => selectPreviewTime(s) ?? s.cursorTime;
 
+/**
+ * The window a download should offer, or null when there is nothing to offer.
+ *
+ * There is deliberately no "and narrower than the whole file" test on top. The
+ * plotted series' timestamps are a subset of every message's, so the plot's data
+ * extremes always sit inside [startTime, endTime]; a zoom is strictly narrower
+ * than those extremes, so being narrower than the file follows for free.
+ *
+ * Returns the stored tuple itself, never a copy. This is read through
+ * useLogStore, whose snapshots are compared by identity, so a fresh array here
+ * would re-render on every unrelated store change — the playhead ticks sixty
+ * times a second — and would break useSyncExternalStore's caching contract.
+ * setViewRange only replaces the tuple when the numbers move, which is what
+ * makes that safe.
+ */
+export const selectExportWindow = (s: LogState): [number, number] | null =>
+  s.viewRange && s.viewRange[1] > s.viewRange[0] ? s.viewRange : null;
+
 export const useLogStore = create<LogState>((set, get) => ({
   status: 'idle',
   progress: 0,
   error: null,
   fileName: null,
+  file: null,
   log: null,
   loadId: 0,
   missionFile: null,
@@ -184,6 +236,7 @@ export const useLogStore = create<LogState>((set, get) => ({
   theme: initialTheme(),
   selectedFields: [],
   axisOverride: {},
+  viewRange: null,
   cursorTime: 0,
   hoverTime: null,
   playing: false,
@@ -210,7 +263,9 @@ export const useLogStore = create<LogState>((set, get) => ({
     // over would silently draw one flight's mission across a different flight,
     // which reads as fact rather than as leftover state.
     missionFileLoadId++;
-    set({ status: 'parsing', progress: 0, error: null, fileName: file.name, log: null, playing: false, hoverTime: null, axisOverride: {}, missionFile: null, missionFileError: null });
+    // viewRange is microseconds on the *previous* log's clock, so it has to go
+    // now rather than when the next plot first reports one.
+    set({ status: 'parsing', progress: 0, error: null, fileName: file.name, file, log: null, playing: false, hoverTime: null, axisOverride: {}, viewRange: null, missionFile: null, missionFileError: null });
 
     const worker = new Worker(new URL('../parsers/parser.worker.ts', import.meta.url), { type: 'module' });
     activeWorker = worker;
@@ -282,7 +337,7 @@ export const useLogStore = create<LogState>((set, get) => ({
     activeWorker?.terminate();
     activeWorker = null;
     missionFileLoadId++;
-    set({ status: 'idle', progress: 0, error: null, fileName: null, log: null, selectedFields: [], axisOverride: {}, cursorTime: 0, hoverTime: null, playing: false, missionFile: null, missionFileError: null });
+    set({ status: 'idle', progress: 0, error: null, fileName: null, file: null, log: null, selectedFields: [], axisOverride: {}, viewRange: null, cursorTime: 0, hoverTime: null, playing: false, missionFile: null, missionFileError: null });
   },
 
   purgeMessage: (name) => {
@@ -323,6 +378,26 @@ export const useLogStore = create<LogState>((set, get) => ({
     }
     if (cur[key] === side) return;
     set({ axisOverride: { ...cur, [key]: side } });
+  },
+
+  // Clamped like cursorTime/hoverTime, and — unlike them — left strictly alone
+  // when the numbers have not moved. Rebuilding the plot (moving a series to the
+  // other axis, adding one, switching theme) replays the carried zoom, so the
+  // same window arrives here again; a fresh tuple each time would re-render the
+  // download control for nothing and break the identity comparison
+  // useSyncExternalStore does on selectExportWindow's result.
+  setViewRange: (r) => {
+    const { log, viewRange: cur } = get();
+    const next: [number, number] | null =
+      r && log
+        ? [
+            Math.max(log.startTime, Math.min(log.endTime, r[0])),
+            Math.max(log.startTime, Math.min(log.endTime, r[1])),
+          ]
+        : r;
+    if (cur === next) return;
+    if (cur && next && cur[0] === next[0] && cur[1] === next[1]) return;
+    set({ viewRange: next });
   },
 
   setCursorTime: (t) => {

@@ -20,8 +20,17 @@ internal/web/dist
 .DS_Store
 *.log
 
-# Sample logs
+tmp
+
+# Sample logs. Both cases: a flight controller writes 00000008.BIN, and git
+# patterns are case-sensitive on Linux, so *.bin alone leaves those untracked.
 *.bin
+*.BIN
 *.tlog
+*.TLOG
 !src/parsers/__fixtures__/*.bin
 !src/parsers/__fixtures__/*.tlog
+
+# Slices exported by the download feature, when one is dropped in the tree to
+# check it. Put the rest of the verification output under tmp/, ignored above.
+*.json.gz

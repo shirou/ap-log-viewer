@@ -94,7 +94,7 @@ export interface MissionStep {
 }
 
 export interface LogData {
-  source: 'bin' | 'tlog';
+  source: LogKind;
   /** Message type name -> series. */
   messages: Record<string, MessageSeries>;
   params: Record<string, number>;
@@ -112,11 +112,58 @@ export interface LogData {
   endTime: number;
 }
 
+/** Which reader a log is for. Lives here so the UI can name one without
+ *  importing the parsers, whose dialect tables are a third of a megabyte. */
+export type LogKind = 'bin' | 'tlog';
+
+/** A span of log time, inclusive at both ends — the same convention as `rangeIndices`. */
+export interface TimeWindow {
+  startUs: number;
+  endUs: number;
+}
+
 /** Progress / result protocol between the worker and the main thread. */
 export type ParseProgress = { type: 'progress'; phase: string; ratio: number };
 export type ParseDone = { type: 'done'; log: LogData };
 export type ParseError = { type: 'error'; message: string };
 export type ParseMessage = ParseProgress | ParseDone | ParseError;
+
+/** What a verified slice turned out to hold, for the reader to see before saving. */
+export interface SliceStats {
+  /** Rows copied from inside the window. */
+  windowRows: number;
+  /** Rows carried in from outside it, all stamped on the window start. */
+  hoistedRows: number;
+  messageTypes: number;
+  /** Extent of the window rows, microseconds on the log's own clock. */
+  startTime: number;
+  endTime: number;
+  bytes: number;
+}
+
+/**
+ * What the worker can be asked to do.
+ *
+ * Declared here rather than in the worker module so a component can post one
+ * without importing that module — which would drag both parsers, and the MAVLink
+ * dialect tables with them, into the main bundle.
+ */
+export type ParseRequest = { op?: 'parse'; file: File };
+export type SliceRequest = {
+  op: 'slice';
+  file: File;
+  kind: LogKind;
+  window: TimeWindow;
+  format: 'original' | 'json';
+  gzip: boolean;
+};
+export type WorkerRequest = ParseRequest | SliceRequest;
+
+/** Result protocol for a slice request. `Blob` is structured-cloneable. */
+export type SliceProgress = { type: 'sliceProgress'; phase: 'scanning' | 'verifying' | 'writing'; ratio?: number };
+export type SliceDone = { type: 'sliceDone'; blob: Blob; stats: SliceStats };
+export type SliceFailed = { type: 'sliceError'; message: string };
+export type SliceMessage = SliceProgress | SliceDone | SliceFailed;
 
 /** A selectable `message.field` pair for plotting. */
 export interface FieldRef {
