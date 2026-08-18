@@ -5,7 +5,7 @@ import { MapboxOverlay, type MapboxOverlayProps } from '@deck.gl/mapbox';
 import { IconLayer, PathLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { selectDisplayTime, useLogStore } from '../store/logStore.ts';
-import type { Waypoint } from '../model/log.ts';
+import { ALL_SOURCES, type Waypoint } from '../model/log.ts';
 import { positionAt } from '../lib/series.ts';
 
 // Raster base maps (no API key required). OpenSeaMap is a transparent overlay.
@@ -110,7 +110,11 @@ function fmtDist(m: number): string {
 
 export default function MapView() {
   const log = useLogStore((s) => s.log);
-  const loadId = useLogStore((s) => s.loadId);
+  // Remounts the map when the drawn track is a different flight: a new log,
+  // or a different MAVLink source within one. Deliberately not `loadId`,
+  // which PlotPanel uses as the identity of a carried zoom and which must
+  // therefore hold still when only the source changes.
+  const mapKey = useLogStore((s) => s.mapKey);
   const displayTime = useLogStore(selectDisplayTime);
   const theme = useLogStore((s) => s.theme);
 
@@ -124,6 +128,11 @@ export default function MapView() {
   // a deliberate act, and the log's own copy is still one click away.
   const mission = missionFile?.waypoints ?? log?.mission;
   const hasMission = !!mission?.length;
+  // Only meaningful once a source has been singled out: under "all sources"
+  // an empty track means the log holds no position at all, which the map
+  // already shows the same way it always has.
+  const noTrack =
+    !!log && log.sources.length > 0 && log.selection !== ALL_SOURCES && (traj?.lat.length ?? 0) === 0;
   const missionInput = useRef<HTMLInputElement>(null);
   // Distinguishes "no plan has ever been loaded" from "the plan was removed",
   // so only the latter pulls the camera back to the flight.
@@ -457,7 +466,7 @@ export default function MapView() {
   return (
     <div className={theme === 'dark' ? 'map-wrap dark-map' : 'map-wrap'}>
       <Map
-        key={loadId}
+        key={mapKey}
         ref={mapRef}
         initialViewState={initialViewState}
         mapStyle={mapStyle}
@@ -526,6 +535,19 @@ export default function MapView() {
               />
               Mission waypoints <span className="count">({mission?.length ?? 0})</span>
             </label>
+            {/* A tlog's ground stations and sensor feeds carry no position, so
+                selecting one leaves the map blank. Say which source it is, the
+                way the mission note below does, rather than letting an empty
+                world map read as a failure to draw the flight.
+
+                Worded around "nothing to draw" rather than "sends none": a
+                vehicle that never got a fix does send position, and every
+                coordinate in it is zero, which extractTrajectory drops. */}
+            {noTrack && (
+              <div className="plot-hint">
+                Nothing to draw for {log?.selection} — it carries no position, or none with a fix.
+              </div>
+            )}
             {!hasMission && (
               <div className="plot-hint">
                 No mission in this log.
@@ -610,7 +632,10 @@ export default function MapView() {
         )}
       </div>
 
-      {traj && traj.lat.length === 0 && (
+      {/* Not shown when a single source is selected and that source simply has
+          no position — the Layers panel says which source that is, and claiming
+          the *log* has none would be false whenever another source does. */}
+      {traj && traj.lat.length === 0 && !noTrack && (
         <div className="legend">
           This log has no position data (GPS/POS)
           {/* The plan is still drawn and framed in this case, so say so rather

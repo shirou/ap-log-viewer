@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { alignAngles, detrend, getColumn, medianStep, resampleLinear, toUniform, unwrapAngle } from './signal.ts';
 import { rangeIndices } from './series.ts';
 import type { LogData, MessageSeries } from '../model/log.ts';
+import { ALL_SOURCES } from '../model/log.ts';
 
 function logOf(messages: Record<string, MessageSeries>): LogData {
   return {
     source: 'bin',
+    sources: [],
+    selection: ALL_SOURCES,
     messages,
     params: {},
     modes: [],

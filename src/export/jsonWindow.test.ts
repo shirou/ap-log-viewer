@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { LogData, MessageSeries } from '../model/log.ts';
+import type { LogData, MessageSeries, ParsedLog } from '../model/log.ts';
+import { ALL_SOURCES } from '../model/log.ts';
 import { JSON_FORMAT_VERSION, jsonBlob, jsonParts } from './jsonWindow.ts';
 
 const f64 = (...v: number[]) => Float64Array.from(v);
@@ -23,7 +24,7 @@ function makeLog(over: Partial<LogData> = {}): LogData {
       ATT: series('ATT', [2_500_000], { Roll: [0.5] }),
     },
     params: { P1: 2, LATE: 7 },
-    modes: [{ time: 2_000_000, mode: 'Mode 3' }],
+    modes: [{ time: 2_000_000, mode: 'Mode 3', modeNum: 3 }],
     texts: [{ time: 2_100_000, text: 'ArduPilot V4.5.7', severity: 6 }],
     commands: [],
     missionSteps: [{ time: 2_200_000, seq: 1 }],
@@ -35,6 +36,8 @@ function makeLog(over: Partial<LogData> = {}): LogData {
       heading: f64(90, NaN),
     },
     mission: [{ seq: 0, command: 16, lat: 35, lon: 139, alt: 50, frame: 3 }],
+    sources: [],
+    selection: ALL_SOURCES,
     startTime: 2_000_000,
     endTime: 3_000_000,
     ...over,
@@ -42,7 +45,37 @@ function makeLog(over: Partial<LogData> = {}): LogData {
 }
 
 const META = { fileName: '00000008.BIN', window: { startUs: 2_000_000, endUs: 3_000_000 } };
-const render = (log: LogData, meta = META) => [...jsonParts(log, meta)].join('');
+
+/**
+ * Wrap the flat fixture as the single-source parse a .bin produces.
+ *
+ * These tests predate the split and are about serialization, so they keep
+ * describing one log; `sources: []` is what tells the writer to emit the flat
+ * version-1 shape a .bin has always had.
+ */
+const asParsed = (log: LogData): ParsedLog => ({
+  source: log.source,
+  sources: log.sources,
+  startTime: log.startTime,
+  endTime: log.endTime,
+  bySource: new Map([
+    [
+      ALL_SOURCES,
+      {
+        messages: log.messages,
+        params: log.params,
+        modes: log.modes,
+        texts: log.texts,
+        commands: log.commands,
+        missionSteps: log.missionSteps,
+        mission: log.mission,
+        trajectory: log.trajectory,
+      },
+    ],
+  ]),
+});
+
+const render = (log: LogData, meta = META) => [...jsonParts(asParsed(log), meta)].join('');
 const parsed = (log: LogData, meta = META) => JSON.parse(render(log, meta));
 
 describe('jsonParts', () => {
@@ -52,8 +85,8 @@ describe('jsonParts', () => {
     expect(Object.keys(doc).sort()).toEqual(
       [
         'commands', 'data', 'generator', 'messages', 'mission', 'missionSteps', 'modes',
-        'negativeZero', 'nonFinite', 'note', 'params', 'source', 'texts', 'timeBase',
-        'timeUnit', 'trajectory', 'window',
+        'negativeZero', 'nonFinite', 'note', 'params', 'source', 'sources', 'texts',
+        'timeBase', 'timeUnit', 'trajectory', 'window',
       ].sort(),
     );
     expect(doc.generator).toEqual({ name: 'ap-log-viewer', format: JSON_FORMAT_VERSION });
@@ -190,7 +223,7 @@ describe('jsonParts', () => {
     const log = makeLog({
       messages: { X: { name: 'X', time: f64of(time), labels: ['TimeUS', 'v'], fields: { v: f64of(time) } } },
     });
-    const parts = [...jsonParts(log, META)];
+    const parts = [...jsonParts(asParsed(log), META)];
     expect(parts.length).toBeGreaterThan(50);
     for (const p of parts) expect(p.length).toBeLessThan(200_000);
     const doc = JSON.parse(parts.join(''));
@@ -211,7 +244,7 @@ describe('jsonParts', () => {
 describe('jsonBlob', () => {
   it('writes the same document a plain render gives', async () => {
     const log = makeLog();
-    const blob = await jsonBlob(log, META, false);
+    const blob = await jsonBlob(asParsed(log), META, false);
     expect(blob.type).toBe('application/json');
     expect(await blob.text()).toBe(render(log));
   });
@@ -222,8 +255,8 @@ describe('jsonBlob', () => {
     const log = makeLog({
       messages: { X: { name: 'X', time: f64of(time), labels: ['TimeUS', 'v'], fields: { v: f64of(time) } } },
     });
-    const plain = await jsonBlob(log, META, false);
-    const gz = await jsonBlob(log, META, true);
+    const plain = await jsonBlob(asParsed(log), META, false);
+    const gz = await jsonBlob(asParsed(log), META, true);
 
     expect(gz.type).toBe('application/gzip');
     expect(gz.size).toBeLessThan(plain.size);
@@ -231,5 +264,152 @@ describe('jsonBlob', () => {
       gz.stream().pipeThrough(new DecompressionStream('gzip')),
     ).text();
     expect(back).toBe(await plain.text());
+  });
+});
+
+// ---- format 2: a tlog is written per MAVLink source ----
+
+const f64c = (...v: number[]) => Float64Array.from(v);
+const emptyTraj = () => ({ time: f64c(), lat: f64c(), lon: f64c(), alt: f64c(), heading: f64c() });
+
+/** Two sources: a vehicle that flies, and the ground station commanding it. */
+function splitParsed(): ParsedLog {
+  const vehicle = {
+    messages: { ATTITUDE: series('ATTITUDE', [2_000_000], { roll: [0.5] }) },
+    params: { WP_SPEED: 2.5 },
+    modes: [{ time: 2_000_000, mode: 'AUTO', modeNum: 10 }],
+    texts: [{ time: 2_100_000, text: 'ready', severity: 6 }],
+    // Filed under the vehicle as its target, but sent by the ground station.
+    commands: [{
+      time: 2_200_000, id: 176, name: 'DO_SET_MODE',
+      source: { sysid: 255, compid: 190 }, target: { sysid: 1, compid: 1 },
+    }],
+    missionSteps: [{ time: 2_300_000, seq: 1 }],
+    mission: [{ seq: 0, command: 16, lat: 35, lon: 139, alt: 50, frame: 3 }],
+    trajectory: { time: f64c(2_000_000), lat: f64c(35), lon: f64c(139), alt: f64c(10), heading: f64c(90) },
+  };
+  const gcs = {
+    messages: { HEARTBEAT: series('HEARTBEAT', [2_050_000], { customMode: [0] }) },
+    params: {},
+    modes: [],
+    texts: [],
+    commands: [vehicle.commands[0]], // the same event, under its sender
+    missionSteps: [],
+    mission: [],
+    trajectory: emptyTraj(),
+  };
+  return {
+    source: 'tlog',
+    startTime: 2_000_000,
+    endTime: 3_000_000,
+    sources: [
+      { sysid: 1, compid: 1, mavType: 11, typeLabel: 'SURFACE_BOAT', compLabel: 'AUTOPILOT1', records: 9, startTime: 2_000_000, endTime: 2_300_000 },
+      { sysid: 255, compid: 190, mavType: 6, typeLabel: 'GCS', compLabel: 'MISSIONPLANNER', records: 4, startTime: 2_050_000, endTime: 2_200_000 },
+    ],
+    bySource: new Map<string, unknown>([['1/1', vehicle], ['255/190', gcs]]),
+  } as unknown as ParsedLog;
+}
+
+const splitDoc = () => JSON.parse([...jsonParts(splitParsed(), META)].join(''));
+
+describe('jsonParts on a split tlog', () => {
+  it('qualifies message keys with the address that sent them', () => {
+    const doc = splitDoc();
+    expect(Object.keys(doc.messages).sort()).toEqual(['1/1:ATTITUDE', '255/190:HEARTBEAT']);
+    expect(doc.messages['1/1:ATTITUDE'].fields.roll).toEqual([0.5]);
+  });
+
+  it('lists the sources, counting types as they stand', () => {
+    const doc = splitDoc();
+    expect(doc.sources).toEqual([
+      { sysid: 1, compid: 1, mavType: 11, type: 'SURFACE_BOAT', component: 'AUTOPILOT1',
+        records: 9, messageTypes: 1, start: 2_000_000, end: 2_300_000 },
+      { sysid: 255, compid: 190, mavType: 6, type: 'GCS', component: 'MISSIONPLANNER',
+        records: 4, messageTypes: 1, start: 2_050_000, end: 2_200_000 },
+    ]);
+  });
+
+  it('nests params and mission under the source that holds them', () => {
+    const doc = splitDoc();
+    expect(doc.params).toEqual({ '1/1': { WP_SPEED: 2.5 }, '255/190': {} });
+    expect(doc.mission['1/1']).toHaveLength(1);
+    expect(doc.mission['255/190']).toEqual([]);
+  });
+
+  it('stamps each event with the address it came from', () => {
+    const doc = splitDoc();
+    expect(doc.modes).toEqual([
+      { time: 2_000_000, mode: 'AUTO', modeNum: 10, sysid: 1, compid: 1 },
+    ]);
+    expect(doc.texts[0]).toMatchObject({ text: 'ready', sysid: 1, compid: 1 });
+    expect(doc.missionSteps[0]).toMatchObject({ seq: 1, sysid: 1, compid: 1 });
+  });
+
+  // The reason CommandEvent carries `source`. A command is filed under its
+  // target as well as its sender, so the key it sits under is not who sent it —
+  // and on a real session every command comes from the ground station, so
+  // reading the key would attribute all of them to the vehicle.
+  it('writes each command once, attributed to its sender', () => {
+    const doc = splitDoc();
+    expect(doc.commands).toEqual([
+      {
+        time: 2_200_000, id: 176, name: 'DO_SET_MODE',
+        sysid: 255, compid: 190, targetSysid: 1, targetCompid: 1,
+      },
+    ]);
+  });
+
+  it('writes a trajectory per source that has one', () => {
+    const doc = splitDoc();
+    expect(doc.trajectory).toHaveLength(1); // the ground station has no track
+    expect(doc.trajectory[0]).toMatchObject({ sysid: 1, compid: 1, lat: [35] });
+  });
+});
+
+// The layout follows the file kind. A window can catch nothing decodable —
+// every frame an unknown msgid, say — and a tlog that came out empty still has
+// to be shaped like a tlog, or the document's own `kind` contradicts it.
+describe('the shape follows the kind, not what the window caught', () => {
+  const emptyTlog = (): ParsedLog => ({
+    source: 'tlog',
+    startTime: 0,
+    endTime: 0,
+    sources: [],
+    bySource: new Map(),
+  });
+
+  it('keeps the split shape for a tlog with no decodable source', () => {
+    const doc = JSON.parse([...jsonParts(emptyTlog(), META)].join(''));
+    expect(doc.source.kind).toBe('tlog');
+    expect(doc.sources).toEqual([]);
+    // Split-shaped even though there is nothing in it.
+    expect(Array.isArray(doc.trajectory)).toBe(true);
+    expect(doc.messages).toEqual({});
+  });
+
+  it('still gives a .bin the flat shape when it is empty', () => {
+    const doc = JSON.parse([...jsonParts({ ...emptyTlog(), source: 'bin' }, META)].join(''));
+    expect(doc.source.kind).toBe('bin');
+    expect(Array.isArray(doc.trajectory)).toBe(false);
+  });
+});
+
+// A .bin has no addresses to disambiguate, its output was never ambiguous, and
+// readers already parse it. Bumping the version must not move it.
+describe('a .bin keeps the flat shape', () => {
+  it('leaves keys bare and collections unnested', () => {
+    const doc = parsed(makeLog());
+    expect(doc.sources).toEqual([]);
+    expect(Object.keys(doc.messages).sort()).toEqual(['ATT', 'GPS']);
+    expect(doc.params).toEqual({ P1: 2, LATE: 7 });
+    expect(Array.isArray(doc.mission)).toBe(true);
+    expect(doc.modes[0]).toEqual({ time: 2_000_000, mode: 'Mode 3', modeNum: 3 });
+    expect(doc.modes[0].sysid).toBeUndefined();
+  });
+
+  it('keeps trajectory an object, as version 1 wrote it', () => {
+    const doc = parsed(makeLog());
+    expect(Array.isArray(doc.trajectory)).toBe(false);
+    expect(doc.trajectory.lat).toEqual([35, 36]);
   });
 });

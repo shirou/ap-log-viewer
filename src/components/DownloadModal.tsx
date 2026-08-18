@@ -180,6 +180,17 @@ export default function DownloadModal({ range, onClose }: { range: [number, numb
                 Parameters and the flight plan appear only if the log recorded them inside the window.
               </span>
             </label>
+            {/* The source selector narrows the view, not the file. Say so here:
+                a reader who has just picked one vehicle has every reason to
+                expect the download to follow, and finding out afterwards is
+                worse than being told. */}
+            {log.sources.length > 1 && (
+              <p className="export-note">
+                Both formats cover <strong>all {log.sources.length} MAVLink sources</strong>, whichever one you
+                are viewing. A slice is a cut of the file, and dropping a source would leave replies without
+                their commands.
+              </p>
+            )}
             {format === 'json' && (
               <label className="export-gzip">
                 <input

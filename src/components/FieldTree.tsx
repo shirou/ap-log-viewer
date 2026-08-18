@@ -28,6 +28,7 @@ export default function FieldTree() {
   const toggleField = useLogStore((s) => s.toggleField);
   const purgeMessage = useLogStore((s) => s.purgeMessage);
   const purgeUnselected = useLogStore((s) => s.purgeUnselected);
+  const parsed = useLogStore((s) => s.parsed);
   const [filter, setFilter] = useState('');
   // Two maps rather than one, because a search opens messages on its own: a
   // single map would carry "I collapsed this" across to the next query, where
@@ -45,9 +46,18 @@ export default function FieldTree() {
   if (!log) return null;
 
   const total = Object.keys(log.messages).length;
-  const purgeableCount = Object.keys(log.messages).filter(
-    (n) => !selectedFields.some((r) => r.message === n),
-  ).length;
+  const multiSource = log.sources.length > 1;
+  // Counted across every source, because that is what the button clears. Taking
+  // it from the projection instead would quote a number lower than what goes:
+  // a type only some other vehicle sent is not in view, and would still be
+  // dropped without ever having been counted.
+  const purgeable = new Set<string>();
+  for (const data of parsed?.bySource.values() ?? []) {
+    for (const name of Object.keys(data.messages)) {
+      if (!selectedFields.some((r) => r.message === name)) purgeable.add(name);
+    }
+  }
+  const purgeableCount = purgeable.size;
 
   return (
     <div>
@@ -62,11 +72,22 @@ export default function FieldTree() {
       />
       <div className="tree-toolbar">
         <span className="count">{total} types</span>
+        {/* Unlike the per-message ✕, this ignores the source selector and
+            clears every source. "Nothing plotted" is a fact about the plot, not
+            about one vehicle, and stopping at the selected source would free
+            only part of the memory the button offers to free. */}
         <button
           disabled={purgeableCount === 0}
-          title="Remove messages with no plotted series from memory to reduce usage"
+          title={
+            multiSource
+              ? 'Remove messages with no plotted series from every source, to reduce memory usage'
+              : 'Remove messages with no plotted series from memory to reduce usage'
+          }
           onClick={() => {
-            if (confirm(`Remove ${purgeableCount} unselected message types. Are you sure?`)) purgeUnselected();
+            const where = multiSource ? ', across every MAVLink source' : '';
+            if (confirm(`Remove ${purgeableCount} unselected message types${where}. Are you sure?`)) {
+              purgeUnselected();
+            }
           }}
         >
           Remove unselected ({purgeableCount})

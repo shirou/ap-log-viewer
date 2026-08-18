@@ -1,6 +1,7 @@
 import { create } from 'zustand';
-import type { FieldRef, LogData, ParseMessage, Waypoint } from '../model/log.ts';
-import { fieldKey } from '../model/log.ts';
+import type { FieldRef, LogData, ParseMessage, ParsedLog, Waypoint } from '../model/log.ts';
+import { ALL_SOURCES, fieldKey } from '../model/log.ts';
+import { defaultSelection, projectLog } from '../parsers/project.ts';
 import { parseMissionFile } from '../parsers/missionFile.ts';
 import type { AxisSide } from '../lib/axisGroups.ts';
 
@@ -77,8 +78,33 @@ export interface LogState {
    */
   file: File | null;
   log: LogData | null;
-  /** Increments on each loaded log; used as a stable remount key for the map. */
+  /**
+   * Every MAVLink source the file held, unprojected. `log` is one selection of
+   * this. Purging drops columns from here, which is the only place doing so
+   * frees anything.
+   */
+  parsed: ParsedLog | null;
+  /** Which source `log` shows: a `sourceKey`, or `ALL_SOURCES`. */
+  selection: string;
+  /**
+   * Increments on each loaded log.
+   *
+   * Read by PlotPanel as the identity token for a carried zoom, so it must NOT
+   * move when only the selected source changes: `xViewRef` is tagged with it
+   * and a mismatch throws the zoom away, after which uPlot's first setScale
+   * reports an un-zoomed view and clears `viewRange` — taking the download
+   * control with it.
+   */
   loadId: number;
+  /**
+   * Remount key for the map, bumped whenever the drawn track is a different
+   * flight: a new log, or a different source within one.
+   *
+   * Split from `loadId` because the two want opposite things on a source
+   * switch — the map should reframe on the new track, the plot should keep the
+   * window the reader zoomed to.
+   */
+  mapKey: number;
 
   /**
    * A flight plan loaded from a separate file, which takes precedence over any
@@ -126,6 +152,8 @@ export interface LogState {
   setTheme: (t: Theme) => void;
   toggleTheme: () => void;
   parseFile: (file: File) => void;
+  /** Show one MAVLink source, or `ALL_SOURCES` for the unsplit log. */
+  setSelection: (key: string) => void;
   /** Load a .waypoints/.txt (QGC WPL) or .plan (QGC JSON) flight plan. */
   loadMissionFile: (file: File) => Promise<void>;
   clearMissionFile: () => void;
@@ -149,6 +177,15 @@ export interface LogState {
   setLoop: (l: boolean) => void;
 }
 
+/**
+ * Field names that are a clock, not a measurement.
+ *
+ * The fallback below picks blindly, so without this a source whose only message
+ * is GPS_INPUT — whose first field is `timeUsec` — opens with a plot of the
+ * UNIX epoch in microseconds.
+ */
+const TIME_FIELDS = new Set(['TimeUS', 'timeUsec', 'timeBootMs', 'timeWeekMs', 'timeUnixUsec', 'timeUtc']);
+
 // Pick a couple of sensible default series to plot once a log loads.
 function defaultFields(log: LogData): FieldRef[] {
   const prefs: FieldRef[] = [
@@ -163,7 +200,7 @@ function defaultFields(log: LogData): FieldRef[] {
   if (picked.length) return picked.slice(0, 2);
   // Fallback: first numeric field of the first message that has one.
   for (const m of Object.values(log.messages)) {
-    const field = Object.keys(m.fields).find((f) => f !== 'TimeUS');
+    const field = Object.keys(m.fields).find((f) => !TIME_FIELDS.has(f));
     if (field) return [{ message: m.name, field }];
   }
   return [];
@@ -185,6 +222,28 @@ function pruneOverrides(overrides: AxisOverrides, fields: FieldRef[]): AxisOverr
   const out: AxisOverrides = {};
   for (const k of keys) if (keep.has(k)) out[k] = overrides[k];
   return out;
+}
+
+/**
+ * Drop message types from some of a parse's sources, releasing their columns.
+ *
+ * Rebuilds only the sources it touches, and only their `messages` map, so every
+ * other array — every column of every kept type, and every source's trajectory
+ * — is carried across by reference. That is what keeps `log.trajectory` stable
+ * through a purge, which the map depends on.
+ */
+function dropTypes(parsed: ParsedLog, keys: string[], shouldDrop: (name: string) => boolean): ParsedLog {
+  const bySource = new Map(parsed.bySource);
+  for (const key of keys) {
+    const data = bySource.get(key);
+    if (!data) continue;
+    const names = Object.keys(data.messages).filter(shouldDrop);
+    if (names.length === 0) continue;
+    const messages = { ...data.messages };
+    for (const n of names) delete messages[n];
+    bySource.set(key, { ...data, messages });
+  }
+  return { ...parsed, bySource };
 }
 
 /**
@@ -230,7 +289,10 @@ export const useLogStore = create<LogState>((set, get) => ({
   fileName: null,
   file: null,
   log: null,
+  parsed: null,
+  selection: ALL_SOURCES,
   loadId: 0,
+  mapKey: 0,
   missionFile: null,
   missionFileError: null,
   theme: initialTheme(),
@@ -265,7 +327,7 @@ export const useLogStore = create<LogState>((set, get) => ({
     missionFileLoadId++;
     // viewRange is microseconds on the *previous* log's clock, so it has to go
     // now rather than when the next plot first reports one.
-    set({ status: 'parsing', progress: 0, error: null, fileName: file.name, file, log: null, playing: false, hoverTime: null, axisOverride: {}, viewRange: null, missionFile: null, missionFileError: null });
+    set({ status: 'parsing', progress: 0, error: null, fileName: file.name, file, log: null, parsed: null, selection: ALL_SOURCES, playing: false, hoverTime: null, axisOverride: {}, viewRange: null, missionFile: null, missionFileError: null });
 
     const worker = new Worker(new URL('../parsers/parser.worker.ts', import.meta.url), { type: 'module' });
     activeWorker = worker;
@@ -279,13 +341,18 @@ export const useLogStore = create<LogState>((set, get) => ({
       if (msg.type === 'progress') {
         set({ progress: msg.ratio });
       } else if (msg.type === 'done') {
+        const selection = defaultSelection(msg.parsed);
+        const log = projectLog(msg.parsed, selection);
         set((s) => ({
           status: 'ready',
           progress: 1,
-          log: msg.log,
+          parsed: msg.parsed,
+          selection,
+          log,
           loadId: s.loadId + 1,
-          cursorTime: msg.log.startTime,
-          selectedFields: defaultFields(msg.log),
+          mapKey: s.mapKey + 1,
+          cursorTime: log.startTime,
+          selectedFields: defaultFields(log),
         }));
         done();
       } else {
@@ -333,31 +400,74 @@ export const useLogStore = create<LogState>((set, get) => ({
     set({ missionFile: null, missionFileError: null });
   },
 
+  // Moving between sources is not opening a log: the clock, the window and the
+  // playhead all still mean what they did, because the timeline's ends span
+  // every source (see LogData.startTime). What has to give way is the field
+  // selection, since the new source need not carry the same message types.
+  setSelection: (key) => {
+    const { parsed, selection, selectedFields, axisOverride } = get();
+    if (!parsed || key === selection) return;
+    const log = projectLog(parsed, key);
+    const kept = selectedFields.filter((r) => log.messages[r.message]?.fields[r.field]);
+    const next = kept.length ? kept : defaultFields(log);
+    set((s) => ({
+      log,
+      selection: log.selection,
+      selectedFields: next,
+      axisOverride: pruneOverrides(axisOverride, next),
+      // The map reframes on the new track; the plot keeps its zoom. Only
+      // `mapKey` moves — see the note on `loadId`.
+      mapKey: s.mapKey + 1,
+      // A different vehicle mid-playback is disorienting, and the playhead is
+      // about to be pointing at a stretch this source may not even cover.
+      playing: false,
+    }));
+  },
+
   reset: () => {
     activeWorker?.terminate();
     activeWorker = null;
     missionFileLoadId++;
-    set({ status: 'idle', progress: 0, error: null, fileName: null, file: null, log: null, selectedFields: [], axisOverride: {}, viewRange: null, cursorTime: 0, hoverTime: null, playing: false, missionFile: null, missionFileError: null });
+    set({ status: 'idle', progress: 0, error: null, fileName: null, file: null, log: null, parsed: null, selection: ALL_SOURCES, selectedFields: [], axisOverride: {}, viewRange: null, cursorTime: 0, hoverTime: null, playing: false, missionFile: null, missionFileError: null });
   },
 
+  // Dropped from `parsed`, not from `log`: the projection holds references into
+  // the parse, so removing a type from the view alone would free nothing and
+  // the button's promise ("to reduce usage") would be a lie.
+  //
+  // `trajectory` survives untouched because it is stored per source rather than
+  // derived from whatever messages remain — which is what lets the map keep
+  // showing the track after the position message itself has been purged.
   purgeMessage: (name) => {
-    const { log, selectedFields, axisOverride } = get();
-    if (!log || !log.messages[name]) return;
-    const messages = { ...log.messages };
-    delete messages[name];
+    const { parsed, selection, log, selectedFields, axisOverride } = get();
+    if (!parsed || !log?.messages[name]) return;
+    // Whatever is on screen is what goes. Under a single source that leaves the
+    // other sources' copies of the type alone; under "all sources" it is all of
+    // them, because that is what "on screen" means there.
+    const scope = selection === ALL_SOURCES ? [...parsed.bySource.keys()] : [selection];
+    const next = dropTypes(parsed, scope, (n) => n === name);
     const kept = selectedFields.filter((r) => r.message !== name);
-    // New `log` ref re-renders consumers; `trajectory` ref is unchanged so the
-    // map does not rebuild and `loadId` stays put so the camera is preserved.
-    set({ log: { ...log, messages }, selectedFields: kept, axisOverride: pruneOverrides(axisOverride, kept) });
+    // New `log` ref re-renders consumers; `loadId`/`mapKey` stay put so neither
+    // the plot's zoom nor the map's camera is disturbed.
+    set({
+      parsed: next,
+      log: projectLog(next, selection),
+      selectedFields: kept,
+      axisOverride: pruneOverrides(axisOverride, kept),
+    });
   },
 
+  // Unlike purgeMessage this ignores the selection and clears every source.
+  // "Types with nothing plotted" is a statement about the plot, not about one
+  // vehicle, and confining it to the selected source would free only part of
+  // the memory — on the sample log, 87% of it, leaving 54,000 records behind
+  // under a button that says it reduces usage.
   purgeUnselected: () => {
-    const { log, selectedFields } = get();
-    if (!log) return;
+    const { parsed, selection, log, selectedFields } = get();
+    if (!parsed || !log) return;
     const keep = new Set(selectedFields.map((r) => r.message));
-    const messages: LogData['messages'] = {};
-    for (const [name, m] of Object.entries(log.messages)) if (keep.has(name)) messages[name] = m;
-    set({ log: { ...log, messages } });
+    const next = dropTypes(parsed, [...parsed.bySource.keys()], (n) => !keep.has(n));
+    set({ parsed: next, log: projectLog(next, selection) });
   },
 
   toggleField: (ref) => {

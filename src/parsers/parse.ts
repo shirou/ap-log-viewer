@@ -1,7 +1,7 @@
 // Shared dispatch: pick the parser by file extension (with a content sniff
 // fallback) so the worker and tests can reuse the same logic.
 
-import type { LogData, LogKind } from '../model/log.ts';
+import type { LogKind, ParsedLog } from '../model/log.ts';
 import type { LogSource } from './source.ts';
 import { parseDataflash, type ParseOptions } from './dataflash.ts';
 import { parseTlog } from './tlog.ts';
@@ -10,7 +10,7 @@ import { detectKind } from './kind.ts';
 export type { LogKind };
 export { detectKind };
 
-export async function parseLog(source: LogSource, opts: ParseOptions = {}): Promise<LogData> {
+export async function parseLog(source: LogSource, opts: ParseOptions = {}): Promise<ParsedLog> {
   let kind = detectKind(source.name);
   if (!kind) {
     // Sniff: DataFlash messages start with 0xA3 0x95.
