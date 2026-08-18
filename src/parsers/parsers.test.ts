@@ -841,6 +841,32 @@ describe('parseTlog: commands reach both ends', () => {
     expect(projectLog(parsed, ALL_SOURCES).commands).toHaveLength(2);
   });
 
+  // A recipient's list holds commands from every station that addressed it, so
+  // the sender is part of a command's identity too. Keyed on command+target
+  // alone, two stations ordering the same thing at one instant collapsed into
+  // one on the vehicle's side while the merged view still showed both.
+  it('tells apart the same command from two different senders', async () => {
+    const OTHER_GCS = { sysid: 254, compid: 1 };
+    const bytes = new Uint8Array([
+      ...tlogRecord(1_000_000, HB, { type: BOAT }, VEHICLE),
+      ...tlogRecord(1_000_001, HB, { type: GCS_TYPE }, GCS),
+      ...tlogRecord(1_000_002, HB, { type: GCS_TYPE }, OTHER_GCS),
+      ...tlogRecord(2_000_000, CMD_LONG, {
+        command: 176, targetSystem: 1, targetComponent: 1,
+      }, GCS),
+      ...tlogRecord(2_000_000, CMD_LONG, {
+        command: 176, targetSystem: 1, targetComponent: 1,
+      }, OTHER_GCS),
+    ]);
+    const parsed = await parseTlog(new MemorySource('t.tlog', bytes));
+
+    const onVehicle = parsed.bySource.get('1/1')!.commands;
+    expect(onVehicle).toHaveLength(2);
+    expect(onVehicle.map((c) => `${c.source.sysid}/${c.source.compid}`).sort())
+      .toEqual(['254/1', '255/190']);
+    expect(projectLog(parsed, ALL_SOURCES).commands).toHaveLength(2);
+  });
+
   // Filing under both ends means "all sources" sees the same command twice.
   // The merge has to put it back together, or every command marker doubles the
   // moment the reader stops filtering.
@@ -994,8 +1020,34 @@ describe('parseTlog: refusing an implausible number of sources', () => {
     expect(parsed.sources.map((s) => `${s.sysid}/${s.compid}`).sort()).toEqual(['1/1', '2/1', '255/190']);
   });
 
+  // The cap counts addresses that decoded a frame. An address can already have a
+  // build from having been a delivery target, so `builds.has()` is not the test
+  // — it would let a source past the budget without ever being counted.
+  it('counts a former delivery target once it starts speaking', async () => {
+    const parts: number[] = [...flood(255)];
+    // 0/0 was addressed while silent, so it has a placeholder but no frames.
+    parts.push(...tlogRecord(4_000_000, CMD_LONG, {
+      command: 176, targetSystem: 200, targetComponent: 200,
+    }, { sysid: 0, compid: 0 }));
+    // It now speaks: the 256th source, which fits.
+    parts.push(...tlogRecord(4_100_000, HB, { type: BOAT }, { sysid: 200, compid: 200 }));
+    const parsed = await parseTlog(new MemorySource('t.tlog', new Uint8Array(parts)));
+    expect(parsed.sources).toHaveLength(256);
+
+    // One more distinct sender is one too many.
+    const over = new Uint8Array([
+      ...parts,
+      ...tlogRecord(5_000_000, HB, { type: BOAT }, { sysid: 201, compid: 201 }),
+    ]);
+    await expect(parseTlog(new MemorySource('t.tlog', over))).rejects.toThrow(/distinct MAVLink sources/);
+  });
+
   // An address that only ever sends msgids no dialect defines builds nothing,
-  // so it must not consume the budget either.
+  // so it must not consume the budget either. (The other half of that guard —
+  // a registered msgid whose payload fails to decode — has no test, because
+  // `deserialize` zero-fills a short payload and so practically never throws.
+  // The check still sits after the decode rather than before it, so that if one
+  // ever does fail it cannot turn a log away.)
   it('does not count senders whose frames never decode', async () => {
     const UNKNOWN: Cls = { MSG_ID: 0xfff0, PAYLOAD_LENGTH: 4, FIELDS: [] };
     const parts: number[] = [...flood(200)];

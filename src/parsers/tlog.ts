@@ -209,6 +209,14 @@ function deserialize(payload: Buffer, clazz: MavClass): Record<string, unknown> 
  */
 const MAX_SOURCES = 256;
 
+/**
+ * Raised past `MAX_SOURCES`.
+ *
+ * A class of its own so the per-frame `catch` can tell it from the malformed
+ * frames that catch exists to swallow, and re-raise it.
+ */
+class TooManySources extends Error {}
+
 export async function parseTlog(source: LogSource, opts: ParseOptions = {}): Promise<ParsedLog> {
   const builds = new Map<string, SourceBuild>();
   /**
@@ -251,21 +259,23 @@ export async function parseTlog(source: LogSource, opts: ParseOptions = {}): Pro
 
       const clazz = REGISTRY[f.msgid];
       if (!clazz) return;
-
-      // After the registry check, so an address that only ever sends msgids no
-      // dialect defines cannot trip it — those build nothing. And outside the
-      // try below, which swallows everything so one bad frame cannot end the
-      // scan: this is the opposite case, where the file has stopped being
-      // plausible and continuing costs hundreds of megabytes.
-      if (decodedSources >= MAX_SOURCES && !builds.has(key)) {
-        throw new Error(
-          `This file names more than ${MAX_SOURCES} distinct MAVLink sources, which no real ` +
-            'session does — it is most likely corrupt or not a telemetry log.',
-        );
-      }
       const payload = Buffer.from(bytes.subarray(f.payloadStart, f.payloadStart + f.plen));
       try {
         const msg = deserialize(payload, clazz);
+
+        // Only once the frame is known to be real. Refusing earlier would let a
+        // msgid no dialect defines — or one that fails to decode — turn away a
+        // log with room to spare, since neither builds anything. And `decoded`
+        // rather than `builds.has`, because an address can already have a build
+        // from being the target of a command without having spoken itself.
+        const seen = builds.get(key);
+        if (!seen?.decoded && decodedSources >= MAX_SOURCES) {
+          throw new TooManySources(
+            `This file names more than ${MAX_SOURCES} distinct MAVLink sources, which no real ` +
+              'session does — it is most likely corrupt or not a telemetry log.',
+          );
+        }
+
         if (f.ts < minTime) minTime = f.ts;
         if (f.ts > maxTime) maxTime = f.ts;
 
@@ -307,7 +317,11 @@ export async function parseTlog(source: LogSource, opts: ParseOptions = {}): Pro
             b.missionFloat.beginTransfer();
           });
         }
-      } catch {
+      } catch (err) {
+        // The cap is the one thing this catch must not eat: it exists so a
+        // single bad frame cannot end the scan, and refusing the file is the
+        // opposite intent.
+        if (err instanceof TooManySources) throw err;
         // ignore a malformed frame, keep scanning
       }
     },
@@ -396,13 +410,17 @@ const HEADING_SOURCES: HeadingSource[] = [
 /**
  * What makes two commands at the same instant the same command.
  *
- * The target matters as much as the MAV_CMD: one filed under both its sender
- * and its recipient is one event seen twice, but two sent to different vehicles
- * in the same microsecond are two events, and collapsing them would hide a
- * marker the reader is looking for.
+ * All three parts are needed. One command is filed under both its sender and
+ * its recipient, so a repeat is only a repeat when the MAV_CMD, who sent it and
+ * who it was for all match. Two vehicles told to do the same thing in one
+ * microsecond are two events; so are two ground stations telling one vehicle,
+ * which a recipient's list holds side by side. What still collapses is the case
+ * this exists for: the same frame reaching the same list twice.
  */
 export function commandKey(c: CommandEvent): string {
-  return `${c.id}:${c.target ? `${c.target.sysid}/${c.target.compid}` : ''}`;
+  const from = `${c.source.sysid}/${c.source.compid}`;
+  const to = c.target ? `${c.target.sysid}/${c.target.compid}` : '';
+  return `${c.id}:${from}:${to}`;
 }
 
 /** One source mid-parse. Becomes a `SourceData` once the scan finishes. */

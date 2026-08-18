@@ -123,13 +123,10 @@ function mergeSources(parsed: ParsedLog): SourceData {
     texts: sortByTime(all.flatMap((d) => d.texts)),
     missionSteps: sortByTime(all.flatMap((d) => d.missionSteps)),
     // Commands are the exception: one is filed under both ends of the exchange,
-    // so merging brings the copies back. Identity has to include the sender as
-    // well as the target here — two ground stations can issue the same command
-    // to the same vehicle, which per-source keying never has to tell apart.
-    commands: normalizeEvents(
-      all.flatMap((d) => d.commands),
-      (c) => `${c.source.sysid}/${c.source.compid}:${commandKey(c)}`,
-    ),
+    // so merging brings the copies back. The same identity as within a source —
+    // command, sender and target — which is what keeps a merged view from
+    // collapsing two stations that issued the same order at the same instant.
+    commands: normalizeEvents(all.flatMap((d) => d.commands), commandKey),
     // Not merged by seq. Two sources hold two plans, and interleaving them by
     // index produces a route neither vehicle ever had — the exact failure
     // MissionCollector refuses to make when a shorter plan replaces a longer

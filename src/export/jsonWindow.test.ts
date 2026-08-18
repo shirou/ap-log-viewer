@@ -366,6 +366,34 @@ describe('jsonParts on a split tlog', () => {
   });
 });
 
+// The layout follows the file kind. A window can catch nothing decodable —
+// every frame an unknown msgid, say — and a tlog that came out empty still has
+// to be shaped like a tlog, or the document's own `kind` contradicts it.
+describe('the shape follows the kind, not what the window caught', () => {
+  const emptyTlog = (): ParsedLog => ({
+    source: 'tlog',
+    startTime: 0,
+    endTime: 0,
+    sources: [],
+    bySource: new Map(),
+  });
+
+  it('keeps the split shape for a tlog with no decodable source', () => {
+    const doc = JSON.parse([...jsonParts(emptyTlog(), META)].join(''));
+    expect(doc.source.kind).toBe('tlog');
+    expect(doc.sources).toEqual([]);
+    // Split-shaped even though there is nothing in it.
+    expect(Array.isArray(doc.trajectory)).toBe(true);
+    expect(doc.messages).toEqual({});
+  });
+
+  it('still gives a .bin the flat shape when it is empty', () => {
+    const doc = JSON.parse([...jsonParts({ ...emptyTlog(), source: 'bin' }, META)].join(''));
+    expect(doc.source.kind).toBe('bin');
+    expect(Array.isArray(doc.trajectory)).toBe(false);
+  });
+});
+
 // A .bin has no addresses to disambiguate, its output was never ambiguous, and
 // readers already parse it. Bumping the version must not move it.
 describe('a .bin keeps the flat shape', () => {

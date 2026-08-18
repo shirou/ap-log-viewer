@@ -535,13 +535,17 @@ export default function MapView() {
               />
               Mission waypoints <span className="count">({mission?.length ?? 0})</span>
             </label>
-            {/* A tlog's ground stations and sensor feeds send no position at
-                all, so selecting one leaves the map blank. Say which it is,
-                the way the mission note below does, rather than letting an
-                empty world map read as a failure to draw the flight. */}
+            {/* A tlog's ground stations and sensor feeds carry no position, so
+                selecting one leaves the map blank. Say which source it is, the
+                way the mission note below does, rather than letting an empty
+                world map read as a failure to draw the flight.
+
+                Worded around "nothing to draw" rather than "sends none": a
+                vehicle that never got a fix does send position, and every
+                coordinate in it is zero, which extractTrajectory drops. */}
             {noTrack && (
               <div className="plot-hint">
-                {log?.selection} sends no position messages, so there is no track to draw.
+                Nothing to draw for {log?.selection} — it carries no position, or none with a fix.
               </div>
             )}
             {!hasMission && (

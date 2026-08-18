@@ -30,9 +30,10 @@ import { EMPTY_TRAJECTORY } from '../parsers/columnar.ts';
  * 2: a tlog is written per MAVLink source. `sources` lists them, `messages`
  * keys become "sysid/compid:TYPE", `params` and `mission` nest under the source
  * key, `trajectory` becomes an array, and each event carries the address it
- * came from. A .bin has no sources and keeps the flat version 1 shape — its
- * output was never ambiguous, so there is nothing to fix and no reason to break
- * a reader. `sources` being empty is how the two are told apart.
+ * came from. A .bin has no addresses and keeps the flat shape version 1 wrote —
+ * its output was never ambiguous, so there is nothing to fix and no reason to
+ * break a reader. `source.kind` says which layout a document uses; `sources`
+ * can be empty for either, since a tlog window may catch nothing decodable.
  */
 export const JSON_FORMAT_VERSION = 2;
 
@@ -153,10 +154,11 @@ const NOTE_SPLIT =
 export function* jsonParts(parsed: ParsedLog, meta: JsonMeta): Generator<string> {
   const { window } = meta;
   const durationSec = (t1: number, t0: number) => (t1 - t0) / 1e6;
-  // A .bin has one nameless source; a tlog has as many as spoke on the link.
-  // That distinction is the whole of the branching below, and `sources` being
-  // empty is how a consumer makes it too.
-  const split = parsed.sources.length > 0;
+  // Keyed off the file kind, not off what this particular window turned out to
+  // hold: a tlog whose window caught only undecodable frames has no sources,
+  // and emitting the flat shape for it would make the document's own `kind`
+  // disagree with its layout. `source.kind` is what a consumer branches on too.
+  const split = parsed.source === 'tlog';
   const entries = [...parsed.bySource.entries()];
 
   yield '{';
@@ -218,10 +220,10 @@ export function* jsonParts(parsed: ParsedLog, meta: JsonMeta): Generator<string>
   // as its sender, so the key it sits under is not who sent it — and on a real
   // session every command comes from the ground station, so reading the key
   // would attribute all of them to the vehicle.
-  yield `${key('modes')}:${JSON.stringify(stamped(entries, split, (d) => d.modes))},`;
-  yield `${key('texts')}:${JSON.stringify(stamped(entries, split, (d) => d.texts))},`;
+  yield `${key('modes')}:${JSON.stringify(stamped(parsed, entries, split, (d) => d.modes))},`;
+  yield `${key('texts')}:${JSON.stringify(stamped(parsed, entries, split, (d) => d.texts))},`;
   yield `${key('commands')}:${JSON.stringify(commandList(entries, split))},`;
-  yield `${key('missionSteps')}:${JSON.stringify(stamped(entries, split, (d) => d.missionSteps))},`;
+  yield `${key('missionSteps')}:${JSON.stringify(stamped(parsed, entries, split, (d) => d.missionSteps))},`;
 
   // Derived rather than raw, and worth carrying: the source preference
   // (POS -> GPS -> AHR2), the scaling and the heading fallback in
@@ -232,12 +234,12 @@ export function* jsonParts(parsed: ParsedLog, meta: JsonMeta): Generator<string>
   if (split) {
     yield `${key('trajectory')}:[`;
     let firstTraj = true;
-    for (const [srcKey, data] of entries) {
-      if (data.trajectory.lat.length === 0) continue;
+    for (const info of parsed.sources) {
+      const data = parsed.bySource.get(sourceKey(info));
+      if (!data || data.trajectory.lat.length === 0) continue;
       if (!firstTraj) yield ',';
       firstTraj = false;
-      const [sysid, compid] = srcKey.split('/');
-      yield `{${key('sysid')}:${sysid},${key('compid')}:${compid},`;
+      yield `{${key('sysid')}:${info.sysid},${key('compid')}:${info.compid},`;
       yield* trajectoryColumns(data.trajectory);
       yield '}';
     }
@@ -294,17 +296,25 @@ function perSource<T>(
   return out;
 }
 
-/** Flatten a per-source event list, tagging each entry with where it came from. */
+/**
+ * Flatten a per-source event list, tagging each entry with where it came from.
+ *
+ * The address comes from `sources` rather than from taking a map key apart:
+ * the key format is this module's business only for a tlog, and a .bin files
+ * its one source under a sentinel that is not an address at all.
+ */
 function stamped<T extends { time: number }>(
+  parsed: ParsedLog,
   entries: [string, SourceData][],
   split: boolean,
   pick: (d: SourceData) => T[],
 ): T[] | (T & { sysid: number; compid: number })[] {
   if (!split) return entries[0] ? pick(entries[0][1]) : [];
   const out: (T & { sysid: number; compid: number })[] = [];
-  for (const [srcKey, data] of entries) {
-    const [sysid, compid] = srcKey.split('/').map(Number);
-    for (const e of pick(data)) out.push({ ...e, sysid, compid });
+  for (const info of parsed.sources) {
+    const data = parsed.bySource.get(sourceKey(info));
+    if (!data) continue;
+    for (const e of pick(data)) out.push({ ...e, sysid: info.sysid, compid: info.compid });
   }
   return out.sort((a, b) => a.time - b.time);
 }

@@ -109,7 +109,7 @@ Two formats:
   `mission` nest under the same source key, and each mode, message and command
   carries the address it came from — for a command, the sender, with the
   recipient alongside it. A `.bin` has no addresses and keeps the flat shape it
-  has always had; `sources` being empty is how you tell the two apart.
+  has always had; `source.kind` tells you which of the two you are reading.
 
 **Both formats always cover every MAVLink source**, whichever one the header is
 showing. A slice is a cut of the file rather than of the view, and dropping a
