@@ -1,6 +1,6 @@
 // Serializing a sliced log as columnar JSON.
 //
-// Takes a `LogData` and writes it out whole: the windowing already happened when
+// Takes a `ParsedLog` and writes it out whole: the windowing already happened when
 // the bytes were cut, so there is no range logic here and nothing to keep in step
 // with `rangeIndices`. What arrives is the parse of a slice carrying structure
 // only, which is why everything in the output was recorded inside the window.
@@ -19,6 +19,10 @@
 
 import type { MessageSeries, ParsedLog, SourceData, SourceInfo, Trajectory } from '../model/log.ts';
 import type { TimeWindow } from '../model/log.ts';
+import { sourceKey } from '../model/log.ts';
+// The one empty track every source without a position shares, rather than a
+// second copy of it here.
+import { EMPTY_TRAJECTORY } from '../parsers/columnar.ts';
 
 /**
  * Bumped when the shape below changes in a way a consumer could trip over.
@@ -180,7 +184,7 @@ export function* jsonParts(parsed: ParsedLog, meta: JsonMeta): Generator<string>
   for (const info of parsed.sources) {
     if (!firstSrc) yield ',';
     firstSrc = false;
-    yield JSON.stringify(sourceSummary(info, parsed.bySource.get(`${info.sysid}/${info.compid}`)));
+    yield JSON.stringify(sourceSummary(info, parsed.bySource.get(sourceKey(info))));
   }
   yield '],';
 
@@ -262,11 +266,6 @@ function* trajectoryColumns(t: Trajectory): Generator<string> {
     yield* numberArray(col);
   }
 }
-
-const EMPTY_F64 = new Float64Array(0);
-const EMPTY_TRAJECTORY: Trajectory = {
-  time: EMPTY_F64, lat: EMPTY_F64, lon: EMPTY_F64, alt: EMPTY_F64, heading: EMPTY_F64,
-};
 
 function sourceSummary(info: SourceInfo, data: SourceData | undefined): Record<string, unknown> {
   return {

@@ -28,6 +28,7 @@ export default function FieldTree() {
   const toggleField = useLogStore((s) => s.toggleField);
   const purgeMessage = useLogStore((s) => s.purgeMessage);
   const purgeUnselected = useLogStore((s) => s.purgeUnselected);
+  const parsed = useLogStore((s) => s.parsed);
   const [filter, setFilter] = useState('');
   // Two maps rather than one, because a search opens messages on its own: a
   // single map would carry "I collapsed this" across to the next query, where
@@ -46,9 +47,17 @@ export default function FieldTree() {
 
   const total = Object.keys(log.messages).length;
   const multiSource = log.sources.length > 1;
-  const purgeableCount = Object.keys(log.messages).filter(
-    (n) => !selectedFields.some((r) => r.message === n),
-  ).length;
+  // Counted across every source, because that is what the button clears. Taking
+  // it from the projection instead would quote a number lower than what goes:
+  // a type only some other vehicle sent is not in view, and would still be
+  // dropped without ever having been counted.
+  const purgeable = new Set<string>();
+  for (const data of parsed?.bySource.values() ?? []) {
+    for (const name of Object.keys(data.messages)) {
+      if (!selectedFields.some((r) => r.message === name)) purgeable.add(name);
+    }
+  }
+  const purgeableCount = purgeable.size;
 
   return (
     <div>

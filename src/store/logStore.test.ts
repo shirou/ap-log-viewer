@@ -337,9 +337,11 @@ describe('setSelection', () => {
   it('does not fall back onto a timestamp column', () => {
     loadTwoSources();
     useLogStore.getState().setSelection('255/190');
-    for (const f of useLogStore.getState().selectedFields) {
-      expect(f.field).not.toBe('timeUsec');
-    }
+    // Pinned positively: a bare `not.toBe('timeUsec')` over the list would also
+    // pass if the fallback picked nothing at all.
+    expect(useLogStore.getState().selectedFields).toEqual([
+      { message: 'HEARTBEAT', field: 'customMode' },
+    ]);
   });
 
   // The timeline spans every source, so nothing about the reader's place in it
@@ -423,6 +425,21 @@ describe('purging with sources', () => {
 
     expect(useLogStore.getState().log!.trajectory).toBe(before);
     expect(useLogStore.getState().log!.trajectory).toBe(vehicle.trajectory);
+  });
+
+  // The pin test above reaches this branch too, but with a single source its two
+  // arms are the same array. With two sources they differ, and a regression to
+  // "always the selected source" turns ✕ into a silent no-op here: no tlog has a
+  // source keyed ALL_SOURCES, so dropTypes would find nothing to drop.
+  it('under all sources, clears the type from every sender', () => {
+    loadTwoSources();
+    useLogStore.getState().setSelection(ALL_SOURCES);
+    useLogStore.getState().purgeMessage('HEARTBEAT');
+
+    const after = useLogStore.getState();
+    expect(after.parsed!.bySource.get('1/1')!.messages.HEARTBEAT).toBeUndefined();
+    expect(after.parsed!.bySource.get('255/190')!.messages.HEARTBEAT).toBeUndefined();
+    expect(after.log!.messages.HEARTBEAT).toBeUndefined();
   });
 
   // Unlike the per-message ✕, this one ignores the selection: "nothing plotted"

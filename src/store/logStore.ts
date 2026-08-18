@@ -214,6 +214,16 @@ function defaultFields(log: LogData): FieldRef[] {
  * it. Every path that removes a field routes through here — note that
  * purgeMessage drops fields without going near toggleField.
  */
+function pruneOverrides(overrides: AxisOverrides, fields: FieldRef[]): AxisOverrides {
+  const keys = Object.keys(overrides);
+  if (keys.length === 0) return overrides;
+  const keep = new Set(fields.map(fieldKey));
+  if (keys.every((k) => keep.has(k))) return overrides;
+  const out: AxisOverrides = {};
+  for (const k of keys) if (keep.has(k)) out[k] = overrides[k];
+  return out;
+}
+
 /**
  * Drop message types from some of a parse's sources, releasing their columns.
  *
@@ -234,16 +244,6 @@ function dropTypes(parsed: ParsedLog, keys: string[], shouldDrop: (name: string)
     bySource.set(key, { ...data, messages });
   }
   return { ...parsed, bySource };
-}
-
-function pruneOverrides(overrides: AxisOverrides, fields: FieldRef[]): AxisOverrides {
-  const keys = Object.keys(overrides);
-  if (keys.length === 0) return overrides;
-  const keep = new Set(fields.map(fieldKey));
-  if (keys.every((k) => keep.has(k))) return overrides;
-  const out: AxisOverrides = {};
-  for (const k of keys) if (keep.has(k)) out[k] = overrides[k];
-  return out;
 }
 
 /**

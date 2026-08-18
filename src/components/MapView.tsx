@@ -628,7 +628,10 @@ export default function MapView() {
         )}
       </div>
 
-      {traj && traj.lat.length === 0 && (
+      {/* Not shown when a single source is selected and that source simply has
+          no position — the Layers panel says which source that is, and claiming
+          the *log* has none would be false whenever another source does. */}
+      {traj && traj.lat.length === 0 && !noTrack && (
         <div className="legend">
           This log has no position data (GPS/POS)
           {/* The plan is still drawn and framed in this case, so say so rather
