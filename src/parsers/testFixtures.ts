@@ -56,7 +56,7 @@ export function fmtForFmtMessage(): number[] {
 }
 
 /** A record header plus a body the caller fills in. */
-function record(type: number, bodySize: number): { u: Uint8Array; dv: DataView } {
+export function record(type: number, bodySize: number): { u: Uint8Array; dv: DataView } {
   const buf = new ArrayBuffer(3 + bodySize);
   const u = new Uint8Array(buf);
   u[0] = HEAD1;

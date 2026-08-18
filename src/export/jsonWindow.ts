@@ -17,11 +17,20 @@
 //  4. Fragments feed a ReadableStream, which is what lets the gzip path avoid
 //     materializing anything at all.
 
-import type { LogData, MessageSeries } from '../model/log.ts';
+import type { MessageSeries, ParsedLog, SourceData, SourceInfo, Trajectory } from '../model/log.ts';
 import type { TimeWindow } from '../model/log.ts';
 
-/** Bumped when the shape below changes in a way a consumer could trip over. */
-export const JSON_FORMAT_VERSION = 1;
+/**
+ * Bumped when the shape below changes in a way a consumer could trip over.
+ *
+ * 2: a tlog is written per MAVLink source. `sources` lists them, `messages`
+ * keys become "sysid/compid:TYPE", `params` and `mission` nest under the source
+ * key, `trajectory` becomes an array, and each event carries the address it
+ * came from. A .bin has no sources and keeps the flat version 1 shape — its
+ * output was never ambiguous, so there is nothing to fix and no reason to break
+ * a reader. `sources` being empty is how the two are told apart.
+ */
+export const JSON_FORMAT_VERSION = 2;
 
 /**
  * Values per emitted fragment. 4096 numbers is roughly 80 KB of text: large
@@ -131,51 +140,113 @@ const NOTE =
   'Everything here was recorded inside the requested window. params and mission ' +
   'may be empty when the log only recorded them outside it.';
 
-export function* jsonParts(log: LogData, meta: JsonMeta): Generator<string> {
+const NOTE_SPLIT =
+  NOTE +
+  ' Keys in `messages` are "sysid/compid:TYPE"; `params` and `mission` nest under ' +
+  'the same source key. In `commands`, sysid/compid is the sender and ' +
+  'targetSysid/targetCompid the recipient.';
+
+export function* jsonParts(parsed: ParsedLog, meta: JsonMeta): Generator<string> {
   const { window } = meta;
   const durationSec = (t1: number, t0: number) => (t1 - t0) / 1e6;
+  // A .bin has one nameless source; a tlog has as many as spoke on the link.
+  // That distinction is the whole of the branching below, and `sources` being
+  // empty is how a consumer makes it too.
+  const split = parsed.sources.length > 0;
+  const entries = [...parsed.bySource.entries()];
 
   yield '{';
   yield `${key('generator')}:{${key('name')}:"ap-log-viewer",${key('format')}:${JSON_FORMAT_VERSION}},`;
-  yield `${key('source')}:{${key('file')}:${JSON.stringify(meta.fileName)},${key('kind')}:${JSON.stringify(log.source)}},`;
+  yield `${key('source')}:{${key('file')}:${JSON.stringify(meta.fileName)},${key('kind')}:${JSON.stringify(parsed.source)}},`;
   yield `${key('timeUnit')}:"microseconds",`;
   // A .bin counts from boot and a tlog from the epoch; the numbers alone cannot
   // say which, and a consumer turning them into wall-clock times needs to know.
-  yield `${key('timeBase')}:${log.source === 'bin' ? '"boot"' : '"unix"'},`;
+  yield `${key('timeBase')}:${parsed.source === 'bin' ? '"boot"' : '"unix"'},`;
   yield `${key('nonFinite')}:"null",${key('negativeZero')}:"normalized",`;
-  yield `${key('note')}:${JSON.stringify(NOTE)},`;
+  yield `${key('note')}:${JSON.stringify(split ? NOTE_SPLIT : NOTE)},`;
   // The window that was asked for, and separately what the slice turned out to
   // hold. They differ whenever the window opens or closes between samples, and
   // printing only one of them would hide that.
   yield `${key('window')}:{${key('start')}:${window.startUs},${key('end')}:${window.endUs},`;
   yield `${key('durationSec')}:${num(durationSec(window.endUs, window.startUs))}},`;
-  yield `${key('data')}:{${key('start')}:${num(log.startTime)},${key('end')}:${num(log.endTime)},`;
-  yield `${key('durationSec')}:${num(durationSec(log.endTime, log.startTime))}},`;
+  yield `${key('data')}:{${key('start')}:${num(parsed.startTime)},${key('end')}:${num(parsed.endTime)},`;
+  yield `${key('durationSec')}:${num(durationSec(parsed.endTime, parsed.startTime))}},`;
 
+  // Type counts are taken from the data as it stands rather than from a number
+  // recorded at parse time, so a document written after purging says what it
+  // actually holds.
+  yield `${key('sources')}:[`;
+  let firstSrc = true;
+  for (const info of parsed.sources) {
+    if (!firstSrc) yield ',';
+    firstSrc = false;
+    yield JSON.stringify(sourceSummary(info, parsed.bySource.get(`${info.sysid}/${info.compid}`)));
+  }
+  yield '],';
+
+  // Keys carry the address for a tlog ("1/1:ATTITUDE") and stay bare for a
+  // .bin. Sorted so two exports of the same slice are the same string.
   yield `${key('messages')}:{`;
   let firstMsg = true;
-  for (const name of Object.keys(log.messages).sort()) {
+  const named: [string, MessageSeries][] = [];
+  for (const [srcKey, data] of entries) {
+    for (const [name, m] of Object.entries(data.messages)) {
+      named.push([split ? `${srcKey}:${name}` : name, m]);
+    }
+  }
+  named.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  for (const [label, m] of named) {
     if (!firstMsg) yield ',';
     firstMsg = false;
-    yield `${key(name)}:`;
-    yield* series(log.messages[name]);
+    yield `${key(label)}:`;
+    yield* series(m);
   }
   yield '},';
 
   // Small enough to hand to JSON.stringify whole, which also gets the escaping
   // and the non-finite handling right for free.
-  yield `${key('params')}:${JSON.stringify(log.params)},`;
-  yield `${key('mission')}:${JSON.stringify(log.mission)},`;
-  yield `${key('modes')}:${JSON.stringify(log.modes)},`;
-  yield `${key('texts')}:${JSON.stringify(log.texts)},`;
-  yield `${key('commands')}:${JSON.stringify(log.commands)},`;
-  yield `${key('missionSteps')}:${JSON.stringify(log.missionSteps)},`;
+  yield `${key('params')}:${JSON.stringify(perSource(entries, split, (d) => d.params, {}))},`;
+  yield `${key('mission')}:${JSON.stringify(perSource(entries, split, (d) => d.mission, []))},`;
+
+  // Events carry their address inline rather than nesting, because a reader
+  // asking "what happened, in order" wants one list. `commands` is the reason
+  // `CommandEvent.source` exists: a command is filed under its target as well
+  // as its sender, so the key it sits under is not who sent it — and on a real
+  // session every command comes from the ground station, so reading the key
+  // would attribute all of them to the vehicle.
+  yield `${key('modes')}:${JSON.stringify(stamped(entries, split, (d) => d.modes))},`;
+  yield `${key('texts')}:${JSON.stringify(stamped(entries, split, (d) => d.texts))},`;
+  yield `${key('commands')}:${JSON.stringify(commandList(entries, split))},`;
+  yield `${key('missionSteps')}:${JSON.stringify(stamped(entries, split, (d) => d.missionSteps))},`;
 
   // Derived rather than raw, and worth carrying: the source preference
   // (POS -> GPS -> AHR2), the scaling and the heading fallback in
   // extractTrajectory are not obvious enough to leave a consumer to redo.
-  yield `${key('trajectory')}:{`;
-  const t = log.trajectory;
+  //
+  // An array for a tlog, where two vehicles have two tracks; an object for a
+  // .bin, where there has only ever been one and a reader already reads it.
+  if (split) {
+    yield `${key('trajectory')}:[`;
+    let firstTraj = true;
+    for (const [srcKey, data] of entries) {
+      if (data.trajectory.lat.length === 0) continue;
+      if (!firstTraj) yield ',';
+      firstTraj = false;
+      const [sysid, compid] = srcKey.split('/');
+      yield `{${key('sysid')}:${sysid},${key('compid')}:${compid},`;
+      yield* trajectoryColumns(data.trajectory);
+      yield '}';
+    }
+    yield ']';
+  } else {
+    yield `${key('trajectory')}:{`;
+    yield* trajectoryColumns(entries[0]?.[1].trajectory ?? EMPTY_TRAJECTORY);
+    yield '}';
+  }
+  yield '}';
+}
+
+function* trajectoryColumns(t: Trajectory): Generator<string> {
   const cols: [string, Float64Array][] = [
     ['time', t.time],
     ['lat', t.lat],
@@ -183,15 +254,86 @@ export function* jsonParts(log: LogData, meta: JsonMeta): Generator<string> {
     ['alt', t.alt],
     ['heading', t.heading],
   ];
-  let firstCol = true;
+  let first = true;
   for (const [name, col] of cols) {
-    if (!firstCol) yield ',';
-    firstCol = false;
+    if (!first) yield ',';
+    first = false;
     yield `${key(name)}:`;
     yield* numberArray(col);
   }
-  yield '}';
-  yield '}';
+}
+
+const EMPTY_F64 = new Float64Array(0);
+const EMPTY_TRAJECTORY: Trajectory = {
+  time: EMPTY_F64, lat: EMPTY_F64, lon: EMPTY_F64, alt: EMPTY_F64, heading: EMPTY_F64,
+};
+
+function sourceSummary(info: SourceInfo, data: SourceData | undefined): Record<string, unknown> {
+  return {
+    sysid: info.sysid,
+    compid: info.compid,
+    ...(info.mavType === undefined ? {} : { mavType: info.mavType }),
+    ...(info.typeLabel ? { type: info.typeLabel } : {}),
+    ...(info.compLabel ? { component: info.compLabel } : {}),
+    records: info.records,
+    messageTypes: data ? Object.keys(data.messages).length : 0,
+    start: info.startTime,
+    end: info.endTime,
+  };
+}
+
+/** Nest a per-source collection under its address, or hand back the one a .bin has. */
+function perSource<T>(
+  entries: [string, SourceData][],
+  split: boolean,
+  pick: (d: SourceData) => T,
+  fallback: T,
+): T | Record<string, T> {
+  if (!split) return entries[0] ? pick(entries[0][1]) : fallback;
+  const out: Record<string, T> = {};
+  for (const [srcKey, data] of entries) out[srcKey] = pick(data);
+  return out;
+}
+
+/** Flatten a per-source event list, tagging each entry with where it came from. */
+function stamped<T extends { time: number }>(
+  entries: [string, SourceData][],
+  split: boolean,
+  pick: (d: SourceData) => T[],
+): T[] | (T & { sysid: number; compid: number })[] {
+  if (!split) return entries[0] ? pick(entries[0][1]) : [];
+  const out: (T & { sysid: number; compid: number })[] = [];
+  for (const [srcKey, data] of entries) {
+    const [sysid, compid] = srcKey.split('/').map(Number);
+    for (const e of pick(data)) out.push({ ...e, sysid, compid });
+  }
+  return out.sort((a, b) => a.time - b.time);
+}
+
+/**
+ * Commands, once each, attributed to whoever sent them.
+ *
+ * A command is stored under its sender *and* its target, so walking every
+ * source would emit it twice. Keeping only the copy sitting under its own
+ * sender collapses that without a separate dedup pass.
+ */
+function commandList(entries: [string, SourceData][], split: boolean): Record<string, unknown>[] {
+  if (!split) return entries[0] ? (entries[0][1].commands as unknown as Record<string, unknown>[]) : [];
+  const out: Record<string, unknown>[] = [];
+  for (const [srcKey, data] of entries) {
+    for (const c of data.commands) {
+      if (`${c.source.sysid}/${c.source.compid}` !== srcKey) continue;
+      out.push({
+        time: c.time,
+        id: c.id,
+        name: c.name,
+        sysid: c.source.sysid,
+        compid: c.source.compid,
+        ...(c.target ? { targetSysid: c.target.sysid, targetCompid: c.target.compid } : {}),
+      });
+    }
+  }
+  return out.sort((a, b) => (a.time as number) - (b.time as number));
 }
 
 /**
@@ -201,8 +343,8 @@ export function* jsonParts(log: LogData, meta: JsonMeta): Generator<string> {
  * larger than one fragment plus the compressor's window is ever live, and a
  * columnar numeric JSON compresses five to eight times over.
  */
-export async function jsonBlob(log: LogData, meta: JsonMeta, gzip: boolean): Promise<Blob> {
-  const it = jsonParts(log, meta);
+export async function jsonBlob(parsed: ParsedLog, meta: JsonMeta, gzip: boolean): Promise<Blob> {
+  const it = jsonParts(parsed, meta);
   const enc = new TextEncoder();
   // Typed as BufferSource because that is what CompressionStream's writable side
   // accepts; a Uint8Array-typed stream will not pipe into it.

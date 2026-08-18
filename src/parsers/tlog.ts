@@ -16,11 +16,28 @@
 import { Buffer } from 'buffer';
 import { minimal, common, ardupilotmega } from 'mavlink-mappings';
 import { DESERIALIZERS } from 'node-mavlink/dist/lib/serialization.js';
-import type { CommandEvent, LogData, MissionStep, ModeChange, TextMessage } from '../model/log.ts';
+import type {
+  CommandEvent,
+  MissionStep,
+  ModeChange,
+  ParsedLog,
+  SourceData,
+  SourceId,
+  SourceInfo,
+  TextMessage,
+} from '../model/log.ts';
 import type { LogSource } from './source.ts';
 import type { ParseOptions } from './dataflash.ts';
-import { LogBuilder, extractTrajectory, normalizeEvents, type ColumnDef } from './columnar.ts';
+import {
+  LogBuilder,
+  extractTrajectory,
+  normalizeEvents,
+  type ColumnDef,
+  type HeadingSource,
+  type TrajCandidate,
+} from './columnar.ts';
 import { MissionCollector } from './mission.ts';
+import { kindFromMavType, modeLabel, reverseMap } from '../lib/vehicleModes.ts';
 
 // mavlink-mappings references the Node global `Buffer`; provide the polyfill.
 const g = globalThis as unknown as { Buffer?: typeof Buffer };
@@ -66,6 +83,9 @@ export interface TlogFrame {
   msgid: number;
   payloadStart: number;
   plen: number;
+  /** Sender's MAVLink address. Both versions carry it, at different offsets. */
+  sysid: number;
+  compid: number;
 }
 
 /**
@@ -80,17 +100,15 @@ export type TlogVisitor = (f: TlogFrame, bytes: Uint8Array) => void;
  * Frame every record in the source and hand each one to `visit`.
  *
  * Reads the whole file, as this parser always has. Chunking it would need the
- * loop's bounds tightened first — the guard below admits `offset + 8 === len`
- * and then reads the STX byte one past the end, which is harmless at EOF
- * (undefined fails the test and the loop resyncs) but would eat the first byte
- * of a stamp whose frame is in the next chunk.
+ * loop's bounds tightened further — the header check below is against `len`, so
+ * a frame straddling a chunk boundary would read as a truncated tail.
  */
 export async function scanTlog(source: LogSource, visit: TlogVisitor, opts: ParseOptions = {}): Promise<void> {
   const bytes = await source.read();
   const len = bytes.byteLength;
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   // Reused across records; see TlogVisitor.
-  const f: TlogFrame = { start: 0, end: 0, ts: 0, msgid: 0, payloadStart: 0, plen: 0 };
+  const f: TlogFrame = { start: 0, end: 0, ts: 0, msgid: 0, payloadStart: 0, plen: 0, sysid: 0, compid: 0 };
   let offset = 0;
   let lastProgress = 0;
 
@@ -102,18 +120,30 @@ export async function scanTlog(source: LogSource, visit: TlogVisitor, opts: Pars
       offset++; // resync
       continue;
     }
+    // The header has to be there before any of it is read. Without this a file
+    // whose last byte is an STX gets `plen === undefined`, which makes every
+    // bound below NaN — and `NaN > len` is false, so the truncation check waves
+    // the frame through with an undefined sysid/compid and a msgid of 0.
+    const headerEnd = stx === V1_STX ? p + 6 : p + 10;
+    if (headerEnd > len) break; // truncated tail
     const plen = bytes[p + 1];
     let payloadStart: number;
     let msgid: number;
     let frameEnd: number;
+    let sysid: number;
+    let compid: number;
     if (stx === V1_STX) {
       payloadStart = p + 6;
       msgid = bytes[p + 5];
+      sysid = bytes[p + 3];
+      compid = bytes[p + 4];
       frameEnd = p + 6 + plen + 2; // header + payload + crc
     } else {
       const incompat = bytes[p + 2];
       payloadStart = p + 10;
       msgid = bytes[p + 7] | (bytes[p + 8] << 8) | (bytes[p + 9] << 16);
+      sysid = bytes[p + 5];
+      compid = bytes[p + 6];
       frameEnd = p + 10 + plen + 2 + (incompat & V2_IFLAG_SIGNED ? 13 : 0);
     }
     if (frameEnd > len || payloadStart + plen > len) break; // truncated tail
@@ -124,6 +154,8 @@ export async function scanTlog(source: LogSource, visit: TlogVisitor, opts: Pars
     f.msgid = msgid;
     f.payloadStart = payloadStart;
     f.plen = plen;
+    f.sysid = sysid;
+    f.compid = compid;
     visit(f, bytes);
 
     offset = frameEnd;
@@ -159,53 +191,121 @@ function deserialize(payload: Buffer, clazz: MavClass): Record<string, unknown> 
   return instance;
 }
 
-export async function parseTlog(source: LogSource, opts: ParseOptions = {}): Promise<LogData> {
-  const builder = new LogBuilder();
+/**
+ * Distinct senders past which a file is not a telemetry log any more.
+ *
+ * `sysid` and `compid` are one byte each, so a crafted or badly damaged file can
+ * name 65,536 addresses — and each one that decodes a frame gets a `LogBuilder`,
+ * whose columns start at 256 slots apiece. Measured: 1.8 MiB of minimal
+ * heartbeats, one per address, expands to 351 MB. A worker killed for running
+ * out of memory takes the tab and the log the reader already had open with it,
+ * usually without raising anything catchable, which is why the slicer refuses
+ * oversized cuts up front rather than discovering them (see MAX_SLICE_BYTES).
+ * Parsing needs the same guard.
+ *
+ * 256 is far above anything real: a busy survey session runs four sources, and
+ * a vehicle carrying a gimbal, a camera and a companion computer is still under
+ * ten. Nothing legitimate approaches this.
+ */
+const MAX_SOURCES = 256;
+
+export async function parseTlog(source: LogSource, opts: ParseOptions = {}): Promise<ParsedLog> {
+  const builds = new Map<string, SourceBuild>();
+  /**
+   * Frames per sender, counted whatever became of them.
+   *
+   * Kept apart from the builds because a build is only created once a frame
+   * decodes: counting inside that branch would drop every frame a source sent
+   * before its first decodable one, so the total would depend on arrival order.
+   * The sample log's vehicle sends 250 frames of an msgid no dialect defines.
+   */
+  const frameCounts = new Map<string, number>();
   const columnsCache = new Map<number, ColumnDef[]>();
-  // Everything pulled out of the stream that is not just another column, kept in
-  // one bag so `extractSpecial` needs a single parameter rather than one per
-  // collection (mirrors ParseState in the DataFlash parser).
-  const special: Special = {
-    params: {},
-    modes: [],
-    texts: [],
-    commands: [],
-    missionSteps: [],
-    lastMode: '',
-    lastSeq: null,
-  };
-  const { params, modes, texts } = special;
-  // MISSION_ITEM_INT is the current form and MISSION_ITEM the deprecated one;
-  // a session can carry both, so collect them apart and prefer the int form.
-  const missionInt = new MissionCollector();
-  const missionFloat = new MissionCollector();
+
+  // Commands aimed at everyone, or at every component of one system, cannot be
+  // filed while scanning: the source they belong to may not have sent a frame
+  // yet. Everything with a concrete target is delivered on the spot, which is
+  // what keeps MissionCollector's arrival order intact.
+  const broadcastCommands: CommandEvent[] = [];
+  const bySystemCommands = new Map<number, CommandEvent[]>();
+
   let minTime = Infinity;
   let maxTime = -Infinity;
+  /**
+   * Sources that have actually decoded a frame.
+   *
+   * Counted apart from `builds.size`, which also holds the placeholders
+   * `targetBuild` opens for an address that has only been *sent to*. Those cost
+   * almost nothing (no columns are ever pushed into them) and are dropped after
+   * the scan, so letting them consume the budget would refuse a perfectly
+   * ordinary log: a ground station addressing 256 components it never hears
+   * back from would lock out the next real vehicle.
+   */
+  let decodedSources = 0;
 
   await scanTlog(
     source,
     (f, bytes) => {
+      const key = `${f.sysid}/${f.compid}`;
+      frameCounts.set(key, (frameCounts.get(key) ?? 0) + 1);
+
       const clazz = REGISTRY[f.msgid];
       if (!clazz) return;
+
+      // After the registry check, so an address that only ever sends msgids no
+      // dialect defines cannot trip it — those build nothing. And outside the
+      // try below, which swallows everything so one bad frame cannot end the
+      // scan: this is the opposite case, where the file has stopped being
+      // plausible and continuing costs hundreds of megabytes.
+      if (decodedSources >= MAX_SOURCES && !builds.has(key)) {
+        throw new Error(
+          `This file names more than ${MAX_SOURCES} distinct MAVLink sources, which no real ` +
+            'session does — it is most likely corrupt or not a telemetry log.',
+        );
+      }
       const payload = Buffer.from(bytes.subarray(f.payloadStart, f.payloadStart + f.plen));
       try {
         const msg = deserialize(payload, clazz);
         if (f.ts < minTime) minTime = f.ts;
         if (f.ts > maxTime) maxTime = f.ts;
+
+        // Only now, with a frame that decoded. Framing alone will hand back an
+        // address out of any stretch of damage the reader resyncs through, and
+        // a source list built from that offers the reader vehicles that never
+        // flew.
+        const build = buildFor(builds, key, f.sysid, f.compid);
+        if (!build.decoded) {
+          build.decoded = true;
+          decodedSources++;
+        }
+        if (f.ts < build.minTime) build.minTime = f.ts;
+        if (f.ts > build.maxTime) build.maxTime = f.ts;
+
         let columns = columnsCache.get(f.msgid);
         if (!columns) {
           columns = columnsFor(clazz, msg);
           columnsCache.set(f.msgid, columns);
         }
-        builder.push(f.msgid, clazz.MSG_NAME, columns, msg, f.ts);
-        extractSpecial(special, clazz.MSG_NAME, msg, f.ts);
-        if (clazz.MSG_NAME === 'MISSION_ITEM_INT') addMissionItem(missionInt, msg, 1e-7);
-        else if (clazz.MSG_NAME === 'MISSION_ITEM') addMissionItem(missionFloat, msg, 1);
-        else if (clazz.MSG_NAME === 'MISSION_COUNT' && isFlightPlan(msg)) {
+        build.builder.push(f.msgid, clazz.MSG_NAME, columns, msg, f.ts);
+
+        const name = clazz.MSG_NAME;
+        if (name === 'HEARTBEAT' && build.mavType === undefined) {
+          const t = numberFrom(msg, 'type');
+          if (Number.isFinite(t)) build.mavType = t;
+        }
+
+        const command = extractSpecial(build.special, name, msg, f.ts, { sysid: f.sysid, compid: f.compid });
+        if (command) deliverCommand(builds, broadcastCommands, bySystemCommands, command);
+
+        if (name === 'MISSION_ITEM_INT') forEachMissionTarget(builds, build, msg, (b) => addMissionItem(b.missionInt, msg, 1e-7));
+        else if (name === 'MISSION_ITEM') forEachMissionTarget(builds, build, msg, (b) => addMissionItem(b.missionFloat, msg, 1));
+        else if (name === 'MISSION_COUNT' && isFlightPlan(msg)) {
           // MISSION_COUNT opens every full transfer, up- or download, so it is
           // the one unambiguous "a new plan starts here" marker in the stream.
-          missionInt.beginTransfer();
-          missionFloat.beginTransfer();
+          forEachMissionTarget(builds, build, msg, (b) => {
+            b.missionInt.beginTransfer();
+            b.missionFloat.beginTransfer();
+          });
         }
       } catch {
         // ignore a malformed frame, keep scanning
@@ -214,50 +314,247 @@ export async function parseTlog(source: LogSource, opts: ParseOptions = {}): Pro
     opts,
   );
 
-  const messages = builder.finalize();
-  // GLOBAL_POSITION_INT/GPS_RAW_INT: lat/lon in degE7, alt in mm.
-  const trajectory = extractTrajectory(
-    messages,
-    [
-      { msg: 'GLOBAL_POSITION_INT', lat: 'lat', lon: 'lon', alt: 'relativeAlt', latScale: 1e-7, altScale: 1e-3 },
-      { msg: 'GPS_RAW_INT', lat: 'lat', lon: 'lon', alt: 'alt', latScale: 1e-7, altScale: 1e-3 },
-    ],
-    // Heading (degrees): hdg is cdeg (65535 = unknown); ATTITUDE.yaw is radians.
-    [
-      { msg: 'GLOBAL_POSITION_INT', field: 'hdg', scale: 0.01, unknown: 65535 },
-      { msg: 'VFR_HUD', field: 'heading', scale: 1 },
-      { msg: 'ATTITUDE', field: 'yaw', scale: 180 / Math.PI },
-      { msg: 'GPS_RAW_INT', field: 'cog', scale: 0.01, unknown: 65535 },
-    ],
-  );
+  // Addresses that only ever appeared as a target, or out of a stretch of
+  // damage, go before anything is delivered to them. The sample log addresses
+  // 1,323 REQUEST_DATA_STREAMs to a 125/191 that never speaks; being talked at
+  // is not being present, and offering it in the selector would invent a
+  // vehicle. Whoever sent to it keeps its own copy either way.
+  for (const [key, build] of [...builds]) if (!build.decoded) builds.delete(key);
+
+  // Deferred commands land before anything is normalized, so every list is
+  // sorted with its full contents. Delivering afterwards would leave the target
+  // side out of time order, and the plot drops a marker's label the moment one
+  // arrives behind the last one placed.
+  for (const build of builds.values()) {
+    build.special.commands.push(...broadcastCommands);
+    const forSystem = bySystemCommands.get(build.sysid);
+    if (forSystem) build.special.commands.push(...forSystem);
+  }
+
+  const sources: SourceInfo[] = [];
+  const bySource = new Map<string, SourceData>();
+  for (const [key, build] of builds) {
+    const messages = build.builder.finalize();
+    const mission = build.missionInt.finalize();
+    bySource.set(key, {
+      messages,
+      params: build.special.params,
+      // Labelled here rather than while scanning: the vehicle kind arrives with
+      // the source's first HEARTBEAT, which need not precede its first mode.
+      modes: build.special.modes.map((m) => ({
+        ...m,
+        mode: modeLabel(build.mavType === undefined ? null : kindFromMavType(build.mavType), m.modeNum),
+      })),
+      texts: build.special.texts,
+      // Consumers are promised time order, and the plot's marker labels are laid
+      // out left to right and silently drop any that arrives behind the last one
+      // placed. What makes two entries at one instant the same event is the
+      // MAV_CMD *and* who it was aimed at: a ground station telling two vehicles
+      // to do the same thing in the same microsecond sent two commands, and
+      // keying on the id alone would show only one of them.
+      commands: normalizeEvents(build.special.commands, commandKey),
+      missionSteps: normalizeEvents(build.special.missionSteps, (s) => s.seq),
+      mission: mission.length ? mission : build.missionFloat.finalize(),
+      // GLOBAL_POSITION_INT/GPS_RAW_INT: lat/lon in degE7, alt in mm.
+      trajectory: extractTrajectory(messages, TRAJECTORY_SOURCES, HEADING_SOURCES),
+    });
+    sources.push({
+      sysid: build.sysid,
+      compid: build.compid,
+      ...(build.mavType === undefined ? {} : { mavType: build.mavType }),
+      ...(build.mavType === undefined ? {} : labelsFor(build.mavType, build.compid)),
+      records: frameCounts.get(key) ?? 0,
+      startTime: Number.isFinite(build.minTime) ? build.minTime : 0,
+      endTime: Number.isFinite(build.maxTime) ? build.maxTime : 0,
+    });
+  }
+  // Most talkative first: the vehicle is nearly always the busiest source, and
+  // a reader scanning the list should meet it before the ground stations.
+  sources.sort((a, b) => b.records - a.records);
 
   if (!Number.isFinite(minTime)) {
     minTime = 0;
     maxTime = 0;
   }
 
-  const mission = missionInt.finalize();
+  return { source: 'tlog', sources, bySource, startTime: minTime, endTime: maxTime };
+}
 
-  // Consumers are promised time order, and the plot's marker labels are laid out
-  // left to right and silently drop any that arrives behind the last one placed.
-  // Two commands sent together are separate events, so the same instant is only
-  // a repeat when the MAV_CMD matches too.
-  const commands = normalizeEvents(special.commands, (c) => c.id);
-  const missionSteps = normalizeEvents(special.missionSteps, (s) => s.seq);
+const TRAJECTORY_SOURCES: TrajCandidate[] = [
+  { msg: 'GLOBAL_POSITION_INT', lat: 'lat', lon: 'lon', alt: 'relativeAlt', latScale: 1e-7, altScale: 1e-3 },
+  { msg: 'GPS_RAW_INT', lat: 'lat', lon: 'lon', alt: 'alt', latScale: 1e-7, altScale: 1e-3 },
+];
 
-  return {
-    source: 'tlog',
-    messages,
-    params,
-    modes,
-    texts,
-    commands,
-    missionSteps,
-    trajectory,
-    mission: mission.length ? mission : missionFloat.finalize(),
-    startTime: minTime,
-    endTime: maxTime,
-  };
+// Heading (degrees): hdg is cdeg (65535 = unknown); ATTITUDE.yaw is radians.
+const HEADING_SOURCES: HeadingSource[] = [
+  { msg: 'GLOBAL_POSITION_INT', field: 'hdg', scale: 0.01, unknown: 65535 },
+  { msg: 'VFR_HUD', field: 'heading', scale: 1 },
+  { msg: 'ATTITUDE', field: 'yaw', scale: 180 / Math.PI },
+  { msg: 'GPS_RAW_INT', field: 'cog', scale: 0.01, unknown: 65535 },
+];
+
+/**
+ * What makes two commands at the same instant the same command.
+ *
+ * The target matters as much as the MAV_CMD: one filed under both its sender
+ * and its recipient is one event seen twice, but two sent to different vehicles
+ * in the same microsecond are two events, and collapsing them would hide a
+ * marker the reader is looking for.
+ */
+export function commandKey(c: CommandEvent): string {
+  return `${c.id}:${c.target ? `${c.target.sysid}/${c.target.compid}` : ''}`;
+}
+
+/** One source mid-parse. Becomes a `SourceData` once the scan finishes. */
+interface SourceBuild {
+  sysid: number;
+  compid: number;
+  /** From this source's first HEARTBEAT; picks the mode table for its modes. */
+  mavType?: number;
+  /**
+   * True once a frame from this address decoded.
+   *
+   * A build is also created for the target of a command or a mission transfer,
+   * before anything is known about whether that address exists. This is what
+   * separates "spoke" from "was spoken to", and it is the condition for
+   * appearing in the source list at all.
+   */
+  decoded: boolean;
+  minTime: number;
+  maxTime: number;
+  builder: LogBuilder;
+  special: Special;
+  /** MISSION_ITEM_INT is the current form and MISSION_ITEM the deprecated one;
+   *  a session can carry both, so collect them apart and prefer the int form. */
+  missionInt: MissionCollector;
+  missionFloat: MissionCollector;
+}
+
+/**
+ * `buildFor`, but declines to open a source once the cap is reached.
+ *
+ * Used by the two paths that create a build for an address that has not spoken
+ * — the target of a command or a mission transfer. Those cannot raise the error
+ * `parseTlog` throws for senders, because they run inside the per-frame `try`
+ * that swallows a malformed frame. Declining instead keeps memory bounded and
+ * loses nothing a reader can see: the sender always keeps its own copy, and a
+ * target that never speaks is dropped after the scan regardless.
+ */
+function targetBuild(
+  builds: Map<string, SourceBuild>,
+  key: string,
+  sysid: number,
+  compid: number,
+): SourceBuild | null {
+  if (builds.size >= MAX_SOURCES && !builds.has(key)) return null;
+  return buildFor(builds, key, sysid, compid);
+}
+
+function buildFor(builds: Map<string, SourceBuild>, key: string, sysid: number, compid: number): SourceBuild {
+  let b = builds.get(key);
+  if (!b) {
+    b = {
+      sysid,
+      compid,
+      decoded: false,
+      minTime: Infinity,
+      maxTime: -Infinity,
+      builder: new LogBuilder(),
+      special: {
+        params: {},
+        modes: [],
+        texts: [],
+        commands: [],
+        missionSteps: [],
+        lastModeNum: null,
+        lastSeq: null,
+      },
+      missionInt: new MissionCollector(),
+      missionFloat: new MissionCollector(),
+    };
+    builds.set(key, b);
+  }
+  return b;
+}
+
+const MAV_TYPE_NAMES: Record<number, string> = reverseMap(minimal.MavType);
+const MAV_COMPONENT_NAMES: Record<number, string> = reverseMap(
+  (common as unknown as Record<string, unknown>).MavComponent ??
+    (minimal as unknown as Record<string, unknown>).MavComponent,
+);
+
+function labelsFor(mavType: number, compid: number): { typeLabel?: string; compLabel?: string } {
+  const typeLabel = MAV_TYPE_NAMES[mavType];
+  const compLabel = MAV_COMPONENT_NAMES[compid];
+  return { ...(typeLabel ? { typeLabel } : {}), ...(compLabel ? { compLabel } : {}) };
+}
+
+/**
+ * File a command under every source it involves, sender aside.
+ *
+ * The sender already has it — `extractSpecial` put it there — so this only adds
+ * the receiving end. A target that never sends anything of its own is dropped
+ * with its build at the end of the scan, which is how the sample log's 1,323
+ * REQUEST_DATA_STREAMs addressed to a 125/191 that never speaks stay out of the
+ * source list without a special case.
+ */
+function deliverCommand(
+  builds: Map<string, SourceBuild>,
+  broadcast: CommandEvent[],
+  bySystem: Map<number, CommandEvent[]>,
+  command: CommandEvent,
+): void {
+  const target = command.target;
+  if (!target) return;
+  if (target.sysid === 0) return void broadcast.push(command);
+  if (!target.compid) {
+    // compid 0 addresses every component of that system, and a missing field
+    // (SET_MODE has no targetComponent) reads as NaN, which means the same.
+    let list = bySystem.get(target.sysid);
+    if (!list) bySystem.set(target.sysid, (list = []));
+    return void list.push(command);
+  }
+  const key = `${target.sysid}/${target.compid}`;
+  if (key === `${command.source.sysid}/${command.source.compid}`) return; // already filed
+  targetBuild(builds, key, target.sysid, target.compid)?.special.commands.push(command);
+}
+
+/**
+ * Run `apply` on the sender's collectors and on whoever the message is for.
+ *
+ * Immediate rather than deferred, unlike commands: `MissionCollector` reads a
+ * transfer as an ordered run — `beginTransfer` clears, then items arrive — so
+ * anything that reorders MISSION_COUNT against its items changes the plan.
+ *
+ * A component of 0 addresses every component of that system, the same as it
+ * does for a command. Those go only to sources already seen, since a plan
+ * cannot be delivered to an address that has not appeared yet without deferring
+ * it — and deferring is exactly what the ordering above forbids. In a real
+ * transfer both ends have been heartbeating for a while by the time a plan
+ * moves, so the set is settled.
+ */
+function forEachMissionTarget(
+  builds: Map<string, SourceBuild>,
+  sender: SourceBuild,
+  msg: Record<string, unknown>,
+  apply: (b: SourceBuild) => void,
+): void {
+  apply(sender);
+  const sys = numberFrom(msg, 'targetSystem');
+  const comp = numberFrom(msg, 'targetComponent');
+  if (!Number.isFinite(sys) || sys === 0) return;
+  const senderKey = `${sender.sysid}/${sender.compid}`;
+
+  if (!Number.isFinite(comp) || comp === 0) {
+    for (const [key, b] of [...builds]) {
+      if (b.sysid === sys && key !== senderKey) apply(b);
+    }
+    return;
+  }
+  const key = `${sys}/${comp}`;
+  if (key === senderKey) return;
+  const target = targetBuild(builds, key, sys, comp);
+  if (target) apply(target);
 }
 
 /** MAV_MISSION_TYPE.MISSION — the flight plan. 1 is a geofence, 2 a rally point. */
@@ -312,12 +609,14 @@ function columnsFor(clazz: MavClass, msg: Record<string, unknown>): ColumnDef[] 
 
 interface Special {
   params: Record<string, number>;
+  /** Collected with `mode` left empty; labelled once the source's MAV_TYPE is
+   *  known, which its first HEARTBEAT need not have delivered by then. */
   modes: ModeChange[];
   texts: TextMessage[];
   commands: CommandEvent[];
   missionSteps: MissionStep[];
-  /** Last mode label pushed, so a repeated HEARTBEAT does not log a change. */
-  lastMode: string;
+  /** Last mode number pushed, so a repeated HEARTBEAT does not log a change. */
+  lastModeNum: number | null;
   /** Last MISSION_CURRENT seq seen; null before the first one. */
   lastSeq: number | null;
 }
@@ -358,7 +657,21 @@ function isLinkSetup(name: string): boolean {
   return name.startsWith('REQUEST_') || name.endsWith('MESSAGE_INTERVAL');
 }
 
-function extractSpecial(st: Special, name: string, msg: Record<string, unknown>, time: number): void {
+/**
+ * Pull everything that is not just another column out of one message.
+ *
+ * Returns the `CommandEvent` it filed, when it filed one, so the caller can put
+ * a copy under the source the command was aimed at as well — the sender is
+ * always a ground station, so filing by sender alone would leave every vehicle
+ * with no commands at all.
+ */
+function extractSpecial(
+  st: Special,
+  name: string,
+  msg: Record<string, unknown>,
+  time: number,
+  src: SourceId,
+): CommandEvent | null {
   switch (name) {
     case 'PARAM_VALUE': {
       const id = msg['paramId'];
@@ -375,12 +688,11 @@ function extractSpecial(st: Special, name: string, msg: Record<string, unknown>,
     }
     case 'HEARTBEAT': {
       const custom = msg['customMode'];
-      if (typeof custom === 'number') {
-        const label = `Mode ${custom}`;
-        if (label !== st.lastMode) {
-          st.modes.push({ time, mode: label });
-          st.lastMode = label;
-        }
+      if (typeof custom === 'number' && custom !== st.lastModeNum) {
+        // `mode` is filled in after the scan, once this source's MAV_TYPE has
+        // picked a table: 10 is AUTO on a Rover and AUTOTUNE on a Copter.
+        st.modes.push({ time, mode: '', modeNum: custom });
+        st.lastModeNum = custom;
       }
       break;
     }
@@ -404,8 +716,19 @@ function extractSpecial(st: Special, name: string, msg: Record<string, unknown>,
       // A frame arriving twice over a dual link is collapsed by normalizeEvents
       // once the list is sorted, not here: the copies need not be adjacent in
       // the stream, so nothing at this point can reliably see them as a pair.
-      st.commands.push({ time, id, name: cmdName });
-      break;
+      const targetSys = numberFrom(msg, 'targetSystem');
+      const targetComp = numberFrom(msg, 'targetComponent');
+      const event: CommandEvent = {
+        time,
+        id,
+        name: cmdName,
+        source: src,
+        ...(Number.isFinite(targetSys)
+          ? { target: { sysid: targetSys, compid: Number.isFinite(targetComp) ? targetComp : 0 } }
+          : {}),
+      };
+      st.commands.push(event);
+      return event;
     }
     // Where the vehicle has got to in its plan. This is streamed at the
     // telemetry rate — 14400 records over an hour on a real log — so only the
@@ -419,4 +742,5 @@ function extractSpecial(st: Special, name: string, msg: Record<string, unknown>,
       break;
     }
   }
+  return null;
 }

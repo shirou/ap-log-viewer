@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { selectDisplayTime, selectExportWindow, useLogStore } from './logStore.ts';
+import { ALL_SOURCES, type ParsedLog } from '../model/log.ts';
+import { projectLog } from '../parsers/project.ts';
 
 // No `log` is needed: with none loaded the time setters skip their clamping,
 // which keeps these focused on which instant the views end up rendering.
@@ -98,13 +100,20 @@ describe('axisOverride', () => {
   // Regression: purgeMessage drops selected fields directly instead of going
   // through toggleField, so a pin used to survive it and spring back later.
   it('drops the pin when the whole message is purged', () => {
+    // Purging now deletes from `parsed` — the projection holds references into
+    // it, so removing a type from the view alone would free nothing — and
+    // re-projects. Both halves have to be present for that to run at all.
+    const messages = { ATT: {} as never, GPS: {} as never };
     useLogStore.setState({
-      log: {
-        messages: { ATT: {} as never, GPS: {} as never },
-        trajectory: {} as never,
+      parsed: {
+        source: 'bin',
+        sources: [],
         startTime: 0,
         endTime: 1,
+        bySource: new Map([[ALL_SOURCES, { messages, trajectory: {} } as never]]),
       } as never,
+      selection: ALL_SOURCES,
+      log: { messages, trajectory: {} as never, sources: [], selection: ALL_SOURCES, startTime: 0, endTime: 1 } as never,
     });
     const s = useLogStore.getState();
     s.setAxisOverride('ATT.Roll', 1);
@@ -240,5 +249,194 @@ describe('loadMissionFile', () => {
     const s = useLogStore.getState();
     expect(s.missionFile).toBeNull();
     expect(s.missionFileError).toBeNull();
+  });
+});
+
+// ---- Switching between MAVLink sources ----
+
+/** A parse with two sources, only one of which flies and carries a track. */
+function loadTwoSources() {
+  const col = (v: number[]) => Float64Array.from(v);
+  const series = (name: string, time: number[], fields: Record<string, number[]>) => ({
+    name, time: col(time), labels: Object.keys(fields),
+    fields: Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, col(v)])),
+  });
+  const track = {
+    time: col([0, 1000]), lat: col([35, 36]), lon: col([139, 140]),
+    alt: col([1, 2]), heading: col([90, 90]),
+  };
+  const empty = {
+    time: col([]), lat: col([]), lon: col([]), alt: col([]), heading: col([]),
+  };
+  const vehicle = {
+    messages: {
+      ATTITUDE: series('ATTITUDE', [0, 1000], { roll: [0, 0.1] }),
+      HEARTBEAT: series('HEARTBEAT', [0, 1000], { customMode: [0, 10] }),
+    },
+    params: {}, modes: [], texts: [], commands: [], missionSteps: [], mission: [],
+    trajectory: track,
+  };
+  const gcs = {
+    // Its only field is a clock, which is what the defaultFields fallback has
+    // to refuse to plot.
+    messages: {
+      GPS_INPUT: series('GPS_INPUT', [0, 1000], { timeUsec: [1e15, 1e15 + 1] }),
+      HEARTBEAT: series('HEARTBEAT', [500], { customMode: [0] }),
+    },
+    params: {}, modes: [], texts: [], commands: [], missionSteps: [], mission: [],
+    trajectory: empty,
+  };
+  const parsed = {
+    source: 'tlog',
+    startTime: 0,
+    endTime: 2000,
+    sources: [
+      { sysid: 1, compid: 1, mavType: 11, records: 4, startTime: 0, endTime: 1000 },
+      { sysid: 255, compid: 190, mavType: 6, records: 3, startTime: 0, endTime: 1000 },
+    ],
+    bySource: new Map<string, unknown>([['1/1', vehicle], ['255/190', gcs]]),
+  } as unknown as ParsedLog;
+
+  const log = projectLog(parsed, '1/1');
+  useLogStore.setState({
+    parsed, selection: '1/1', log, loadId: 5, mapKey: 5,
+    selectedFields: [{ message: 'ATTITUDE', field: 'roll' }],
+    axisOverride: {}, viewRange: [100, 900], cursorTime: 400, playing: false,
+  });
+  return { parsed, vehicle, gcs };
+}
+
+describe('setSelection', () => {
+  it('shows the chosen source and drops fields it does not carry', () => {
+    loadTwoSources();
+    useLogStore.getState().setSelection('255/190');
+
+    const s = useLogStore.getState();
+    expect(s.selection).toBe('255/190');
+    expect(Object.keys(s.log!.messages).sort()).toEqual(['GPS_INPUT', 'HEARTBEAT']);
+    expect(s.selectedFields).not.toContainEqual({ message: 'ATTITUDE', field: 'roll' });
+  });
+
+  // Fields the new source does have are worth keeping: a reader comparing two
+  // vehicles is looking at the same signal on each.
+  it('keeps a field both sources carry', () => {
+    loadTwoSources();
+    const s = useLogStore.getState();
+    s.toggleField({ message: 'ATTITUDE', field: 'roll' }); // clear
+    s.toggleField({ message: 'HEARTBEAT', field: 'customMode' });
+    s.setSelection('255/190');
+
+    expect(useLogStore.getState().selectedFields).toEqual([
+      { message: 'HEARTBEAT', field: 'customMode' },
+    ]);
+  });
+
+  // The fallback picks the first numeric field of the first message, and
+  // GPS_INPUT's is `timeUsec` — a UNIX timestamp in microseconds, which as a
+  // plot is a straight line at 1e15.
+  it('does not fall back onto a timestamp column', () => {
+    loadTwoSources();
+    useLogStore.getState().setSelection('255/190');
+    for (const f of useLogStore.getState().selectedFields) {
+      expect(f.field).not.toBe('timeUsec');
+    }
+  });
+
+  // The timeline spans every source, so nothing about the reader's place in it
+  // has stopped being true. `loadId` in particular tags PlotPanel's carried
+  // zoom: bumping it would throw the window away, and uPlot would then report
+  // an un-zoomed view and clear viewRange — taking the download control too.
+  it('leaves the clock, the window and the plot identity alone', () => {
+    loadTwoSources();
+    const before = useLogStore.getState();
+    useLogStore.getState().setSelection('255/190');
+    const after = useLogStore.getState();
+
+    expect(after.log!.startTime).toBe(before.log!.startTime);
+    expect(after.log!.endTime).toBe(before.log!.endTime);
+    expect(after.cursorTime).toBe(before.cursorTime);
+    expect(after.viewRange).toBe(before.viewRange);
+    expect(after.loadId).toBe(before.loadId);
+    // The map is the one thing that has to start over: it is drawing a
+    // different vehicle's track, or none.
+    expect(after.mapKey).toBe(before.mapKey + 1);
+  });
+
+  it('stops playback, which was following a different vehicle', () => {
+    loadTwoSources();
+    useLogStore.setState({ playing: true });
+    useLogStore.getState().setSelection('255/190');
+    expect(useLogStore.getState().playing).toBe(false);
+  });
+
+  it('does nothing when the selection has not moved', () => {
+    loadTwoSources();
+    const before = useLogStore.getState().log;
+    useLogStore.getState().setSelection('1/1');
+    expect(useLogStore.getState().log).toBe(before);
+  });
+});
+
+describe('purging with sources', () => {
+  // The button says it reduces memory usage. Dropping a type from the
+  // projection alone would free nothing, because the projection is references
+  // into the parse.
+  it('removes the columns from the parse, not just from the view', () => {
+    const { parsed } = loadTwoSources();
+    useLogStore.getState().purgeMessage('ATTITUDE');
+
+    const after = useLogStore.getState();
+    expect(after.log!.messages.ATTITUDE).toBeUndefined();
+    expect(after.parsed!.bySource.get('1/1')!.messages.ATTITUDE).toBeUndefined();
+    // And the original is left alone rather than mutated underneath anyone.
+    expect(parsed.bySource.get('1/1')!.messages.ATTITUDE).toBeDefined();
+  });
+
+  it('does not bring a purged type back when the source is revisited', () => {
+    loadTwoSources();
+    const s = useLogStore.getState();
+    s.purgeMessage('ATTITUDE');
+    s.setSelection('255/190');
+    useLogStore.getState().setSelection('1/1');
+
+    expect(useLogStore.getState().log!.messages.ATTITUDE).toBeUndefined();
+  });
+
+  // Under a single source, only that source's copy goes: the other vehicle's
+  // HEARTBEAT is not what the reader was looking at.
+  it('leaves the other sources\' copies alone', () => {
+    loadTwoSources();
+    useLogStore.getState().purgeMessage('HEARTBEAT');
+
+    const after = useLogStore.getState();
+    expect(after.parsed!.bySource.get('1/1')!.messages.HEARTBEAT).toBeUndefined();
+    expect(after.parsed!.bySource.get('255/190')!.messages.HEARTBEAT).toBeDefined();
+  });
+
+  // Regression for the map: `trajectory` is stored per source rather than
+  // derived from whatever messages survive, so purging the position message
+  // cannot take the track with it.
+  it('keeps the map\'s track, by reference', () => {
+    const { vehicle } = loadTwoSources();
+    const before = useLogStore.getState().log!.trajectory;
+    useLogStore.getState().purgeMessage('ATTITUDE');
+
+    expect(useLogStore.getState().log!.trajectory).toBe(before);
+    expect(useLogStore.getState().log!.trajectory).toBe(vehicle.trajectory);
+  });
+
+  // Unlike the per-message ✕, this one ignores the selection: "nothing plotted"
+  // is a fact about the plot, and stopping at the selected source would leave
+  // most of the memory it offers to free still allocated.
+  it('clears unselected types from every source at once', () => {
+    loadTwoSources();
+    useLogStore.setState({ selectedFields: [{ message: 'ATTITUDE', field: 'roll' }] });
+    useLogStore.getState().purgeUnselected();
+
+    const after = useLogStore.getState();
+    expect(after.parsed!.bySource.get('1/1')!.messages.ATTITUDE).toBeDefined();
+    expect(after.parsed!.bySource.get('1/1')!.messages.HEARTBEAT).toBeUndefined();
+    // The other source is cleared too, even though it was never on screen.
+    expect(Object.keys(after.parsed!.bySource.get('255/190')!.messages)).toEqual([]);
   });
 });

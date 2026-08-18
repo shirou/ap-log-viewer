@@ -45,6 +45,7 @@ export default function FieldTree() {
   if (!log) return null;
 
   const total = Object.keys(log.messages).length;
+  const multiSource = log.sources.length > 1;
   const purgeableCount = Object.keys(log.messages).filter(
     (n) => !selectedFields.some((r) => r.message === n),
   ).length;
@@ -62,11 +63,22 @@ export default function FieldTree() {
       />
       <div className="tree-toolbar">
         <span className="count">{total} types</span>
+        {/* Unlike the per-message ✕, this ignores the source selector and
+            clears every source. "Nothing plotted" is a fact about the plot, not
+            about one vehicle, and stopping at the selected source would free
+            only part of the memory the button offers to free. */}
         <button
           disabled={purgeableCount === 0}
-          title="Remove messages with no plotted series from memory to reduce usage"
+          title={
+            multiSource
+              ? 'Remove messages with no plotted series from every source, to reduce memory usage'
+              : 'Remove messages with no plotted series from memory to reduce usage'
+          }
           onClick={() => {
-            if (confirm(`Remove ${purgeableCount} unselected message types. Are you sure?`)) purgeUnselected();
+            const where = multiSource ? ', across every MAVLink source' : '';
+            if (confirm(`Remove ${purgeableCount} unselected message types${where}. Are you sure?`)) {
+              purgeUnselected();
+            }
           }}
         >
           Remove unselected ({purgeableCount})

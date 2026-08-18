@@ -1,0 +1,427 @@
+{
+  "typical": {
+    "source": "bin",
+    "startTime": 1000000,
+    "endTime": 4500000,
+    "messages": {
+      "MSG": {
+        "labels": [
+          "TimeUS",
+          "Message"
+        ],
+        "time": [
+          1000000,
+          1020000
+        ],
+        "fields": {
+          "TimeUS": [
+            1000000,
+            1020000
+          ]
+        },
+        "textFields": {
+          "Message": [
+            "ArduRover V4.6.3 (3fc7011a)",
+            "ChibiOS: 88b84600"
+          ]
+        }
+      },
+      "VER": {
+        "labels": [
+          "TimeUS",
+          "BT",
+          "BST",
+          "Maj",
+          "Min",
+          "FWS"
+        ],
+        "time": [
+          1010000
+        ],
+        "fields": {
+          "TimeUS": [
+            1010000
+          ],
+          "BT": [
+            10
+          ],
+          "BST": [
+            0
+          ],
+          "Maj": [
+            4
+          ],
+          "Min": [
+            6
+          ]
+        },
+        "textFields": {
+          "FWS": [
+            "ArduRover V4.6.3 (3fc7011a)"
+          ]
+        }
+      },
+      "PARM": {
+        "labels": [
+          "TimeUS",
+          "Name",
+          "Value"
+        ],
+        "time": [
+          1030000,
+          1040000
+        ],
+        "fields": {
+          "TimeUS": [
+            1030000,
+            1040000
+          ],
+          "Value": [
+            2.5,
+            5000
+          ]
+        },
+        "textFields": {
+          "Name": [
+            "WP_SPEED",
+            "BATT_CAPACITY"
+          ]
+        }
+      },
+      "MODE": {
+        "labels": [
+          "TimeUS",
+          "Mode",
+          "ModeNum",
+          "Rsn"
+        ],
+        "time": [
+          1050000,
+          4500000
+        ],
+        "fields": {
+          "TimeUS": [
+            1050000,
+            4500000
+          ],
+          "Mode": [
+            0,
+            10
+          ],
+          "ModeNum": [
+            0,
+            10
+          ],
+          "Rsn": [
+            0,
+            0
+          ]
+        }
+      },
+      "CMD": {
+        "labels": [
+          "TimeUS",
+          "CTot",
+          "CNum",
+          "CId",
+          "Prm1",
+          "Prm2",
+          "Prm3",
+          "Prm4",
+          "Lat",
+          "Lng",
+          "Alt",
+          "Frame"
+        ],
+        "time": [
+          1060000,
+          1070000,
+          1080000
+        ],
+        "fields": {
+          "TimeUS": [
+            1060000,
+            1070000,
+            1080000
+          ],
+          "CTot": [
+            3,
+            3,
+            3
+          ],
+          "CNum": [
+            0,
+            1,
+            2
+          ],
+          "CId": [
+            16,
+            16,
+            16
+          ],
+          "Prm1": [
+            0,
+            0,
+            0
+          ],
+          "Prm2": [
+            0,
+            0,
+            0
+          ],
+          "Prm3": [
+            0,
+            0,
+            0
+          ],
+          "Prm4": [
+            0,
+            0,
+            0
+          ],
+          "Lat": [
+            35,
+            35.01,
+            35.019999999999996
+          ],
+          "Lng": [
+            139,
+            139.01,
+            139.01999999999998
+          ],
+          "Alt": [
+            0,
+            30,
+            30
+          ],
+          "Frame": [
+            3,
+            3,
+            3
+          ]
+        }
+      },
+      "GPS": {
+        "labels": [
+          "TimeUS",
+          "Lat",
+          "Lng",
+          "Alt"
+        ],
+        "time": [
+          2000000,
+          3000000,
+          4000000
+        ],
+        "fields": {
+          "TimeUS": [
+            2000000,
+            3000000,
+            4000000
+          ],
+          "Lat": [
+            35,
+            35.001,
+            35.001999999999995
+          ],
+          "Lng": [
+            139,
+            139.001,
+            139.00199999999998
+          ],
+          "Alt": [
+            100,
+            110,
+            120
+          ]
+        }
+      },
+      "MISE": {
+        "labels": [
+          "TimeUS",
+          "CTot",
+          "CNum",
+          "CId",
+          "Prm1",
+          "Prm2",
+          "Prm3",
+          "Prm4",
+          "Lat",
+          "Lng",
+          "Alt",
+          "Frame"
+        ],
+        "time": [
+          3500000
+        ],
+        "fields": {
+          "TimeUS": [
+            3500000
+          ],
+          "CTot": [
+            0
+          ],
+          "CNum": [
+            1
+          ],
+          "CId": [
+            16
+          ],
+          "Prm1": [
+            0
+          ],
+          "Prm2": [
+            0
+          ],
+          "Prm3": [
+            0
+          ],
+          "Prm4": [
+            0
+          ],
+          "Lat": [
+            35.01
+          ],
+          "Lng": [
+            139.01
+          ],
+          "Alt": [
+            0
+          ],
+          "Frame": [
+            3
+          ]
+        }
+      }
+    },
+    "params": {
+      "WP_SPEED": 2.5,
+      "BATT_CAPACITY": 5000
+    },
+    "texts": [
+      {
+        "time": 1000000,
+        "text": "ArduRover V4.6.3 (3fc7011a)"
+      },
+      {
+        "time": 1020000,
+        "text": "ChibiOS: 88b84600"
+      }
+    ],
+    "commands": [],
+    "missionSteps": [
+      {
+        "time": 3500000,
+        "seq": 1
+      }
+    ],
+    "mission": [
+      {
+        "seq": 0,
+        "command": 16,
+        "lat": 35,
+        "lon": 139,
+        "alt": 0,
+        "frame": 3
+      },
+      {
+        "seq": 1,
+        "command": 16,
+        "lat": 35.01,
+        "lon": 139.01,
+        "alt": 30,
+        "frame": 3
+      },
+      {
+        "seq": 2,
+        "command": 16,
+        "lat": 35.019999999999996,
+        "lon": 139.01999999999998,
+        "alt": 30,
+        "frame": 3
+      }
+    ],
+    "trajectory": {
+      "time": [
+        2000000,
+        3000000,
+        4000000
+      ],
+      "lat": [
+        35,
+        35.001,
+        35.001999999999995
+      ],
+      "lon": [
+        139,
+        139.001,
+        139.00199999999998
+      ],
+      "alt": [
+        100,
+        110,
+        120
+      ],
+      "heading": [
+        null,
+        null,
+        null
+      ]
+    },
+    "modesBeforeModeNames": [
+      {
+        "time": 1050000,
+        "mode": "Mode 0"
+      },
+      {
+        "time": 4500000,
+        "mode": "Mode 10"
+      }
+    ]
+  },
+  "timeless": {
+    "source": "bin",
+    "startTime": 0,
+    "endTime": 0,
+    "messages": {
+      "PARM": {
+        "labels": [
+          "Name",
+          "Value"
+        ],
+        "time": [
+          0,
+          0
+        ],
+        "fields": {
+          "Value": [
+            2.5,
+            5000
+          ]
+        },
+        "textFields": {
+          "Name": [
+            "WP_SPEED",
+            "BATT_CAPACITY"
+          ]
+        }
+      }
+    },
+    "params": {
+      "WP_SPEED": 2.5,
+      "BATT_CAPACITY": 5000
+    },
+    "texts": [],
+    "commands": [],
+    "missionSteps": [],
+    "mission": [],
+    "trajectory": {
+      "time": [],
+      "lat": [],
+      "lon": [],
+      "alt": [],
+      "heading": []
+    },
+    "modesBeforeModeNames": []
+  }
+}

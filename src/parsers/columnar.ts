@@ -26,13 +26,20 @@ import { searchSortedLE } from '../lib/series.ts';
  *
  * The sort is stable, so events that genuinely share an instant keep the order
  * they were logged in. Sorts `events` in place and returns the kept subset.
+ *
+ * `keyOf` may return a string when identity takes more than one field — a
+ * command is the same command only if its target matches too, and two sent to
+ * different vehicles in the same microsecond are two events.
  */
-export function normalizeEvents<T extends { time: number }>(events: T[], keyOf: (e: T) => number): T[] {
+export function normalizeEvents<T extends { time: number }>(
+  events: T[],
+  keyOf: (e: T) => number | string,
+): T[] {
   events.sort((a, b) => a.time - b.time);
   const out: T[] = [];
   // NaN never equals itself, so the first event always opens a fresh instant.
   let instant = NaN;
-  const seen = new Set<number>();
+  const seen = new Set<number | string>();
   for (const e of events) {
     if (e.time !== instant) {
       instant = e.time;
@@ -190,7 +197,9 @@ export interface HeadingSource {
   unknown?: number;
 }
 
-const EMPTY_TRAJECTORY: Trajectory = {
+/** Shared so that every source without a position points at one empty track,
+ *  which is also what lets the worker transfer its buffer exactly once. */
+export const EMPTY_TRAJECTORY: Trajectory = {
   time: EMPTY_F64,
   lat: EMPTY_F64,
   lon: EMPTY_F64,

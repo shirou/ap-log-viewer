@@ -150,6 +150,14 @@ input[type="text"] {
 .header .file {
   color: var(--muted);
 }
+/* Replaces the message-type readout, so it has to survive the same squeeze the
+   readout did: the header is a single flex row until 768px, where it wraps. */
+.header .source-select {
+  max-width: 22em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .layout {
   display: grid;
@@ -1202,6 +1210,19 @@ button[aria-disabled='true']:hover {
 .export-format.disabled .export-why {
   opacity: 0.5;
   cursor: default;
+}
+
+/* Applies to both formats, so it sits outside either label rather than being
+   repeated under each. */
+.export-note {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.export-note strong {
+  color: var(--text);
+  font-weight: 600;
 }
 
 .export-gzip {

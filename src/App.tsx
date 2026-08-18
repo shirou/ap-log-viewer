@@ -8,6 +8,7 @@ import FieldTree from './components/FieldTree.tsx';
 import ParamsTable from './components/ParamsTable.tsx';
 import MessagesLog from './components/MessagesLog.tsx';
 import PlotDownload from './components/PlotDownload.tsx';
+import SourceSelect from './components/SourceSelect.tsx';
 import AnalysisModal from './components/AnalysisModal.tsx';
 
 type Tab = 'fields' | 'params' | 'messages';
@@ -78,11 +79,7 @@ export default function App() {
         <h1>ArduPilot Log Viewer</h1>
         {fileName && <span className="file">{fileName}</span>}
         <div className="spacer" />
-        {ready && (
-          <span className="file">
-            {log.source.toUpperCase()} · {Object.keys(log.messages).length} msg types
-          </span>
-        )}
+        {ready && <SourceSelect />}
         <button
           className="theme-toggle"
           aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}

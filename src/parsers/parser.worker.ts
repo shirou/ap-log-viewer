@@ -40,11 +40,14 @@ async function runParse(file: File) {
   const post = (m: ParseMessage, transfer: Transferable[] = []) => self.postMessage(m, transfer);
   try {
     const source = new LocalFileSource(file);
-    const log = await parseLog(source, {
+    const parsed = await parseLog(source, {
       onProgress: (ratio) => post({ type: 'progress', phase: 'parsing', ratio }),
     });
 
     // Collect typed-array buffers to transfer ownership (avoids a structured clone).
+    // Every source's columns go across; the main thread chooses between them
+    // without re-reading the file. Deduplicating by buffer matters more now
+    // than it did: sources with no position share one empty trajectory.
     const transfer: Transferable[] = [];
     const seen = new Set<ArrayBufferLike>();
     const add = (a: Float64Array) => {
@@ -53,17 +56,19 @@ async function runParse(file: File) {
         transfer.push(a.buffer as ArrayBuffer);
       }
     };
-    for (const m of Object.values(log.messages)) {
-      add(m.time);
-      for (const f of Object.values(m.fields)) add(f);
+    for (const data of parsed.bySource.values()) {
+      for (const m of Object.values(data.messages)) {
+        add(m.time);
+        for (const f of Object.values(m.fields)) add(f);
+      }
+      add(data.trajectory.time);
+      add(data.trajectory.lat);
+      add(data.trajectory.lon);
+      add(data.trajectory.alt);
+      add(data.trajectory.heading);
     }
-    add(log.trajectory.time);
-    add(log.trajectory.lat);
-    add(log.trajectory.lon);
-    add(log.trajectory.alt);
-    add(log.trajectory.heading);
 
-    post({ type: 'done', log }, transfer);
+    post({ type: 'done', parsed }, transfer);
   } catch (err) {
     post({ type: 'error', message: err instanceof Error ? err.message : String(err) });
   }
@@ -124,10 +129,13 @@ async function runSlice(req: Extract<WorkerRequest, { op: 'slice' }>) {
 
     // JSON is built from the same verified bytes, so the two formats can never
     // disagree about which records the window held.
+    // Still dispatched on `req.kind` rather than through `parseLog`: that would
+    // re-derive the kind from the slice's name, and `detectKind` reads `.log`
+    // as a .bin. The kind the rows on screen came from is the one to use.
     post({ type: 'sliceProgress', phase: 'writing' });
-    const log =
+    const parsedSlice =
       req.kind === 'bin' ? await parseDataflash(verifySource) : await parseTlog(verifySource);
-    const blob = await jsonBlob(log, { fileName: req.file.name, window: req.window }, req.gzip);
+    const blob = await jsonBlob(parsedSlice, { fileName: req.file.name, window: req.window }, req.gzip);
     post({ type: 'sliceDone', blob, stats: { ...stats, bytes: blob.size } });
   } catch (err) {
     // A stale File handle is the realistic one: the log was moved, deleted or

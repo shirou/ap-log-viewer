@@ -44,6 +44,43 @@ patterns instead store the geometry QGC regenerates them from, and so cannot be.
 Anything the file holds no usable waypoints for is counted and reported on the
 map panel rather than silently dropped.
 
+## MAVLink sources
+
+A `.tlog` is not one vehicle's log — it is everything that crossed the telemetry
+link. The autopilot, every ground station, and any sensor feeding the flight
+controller all write into the same file, and they are told apart only by the
+SYSID/COMPID pair on each frame. A real one-hour recording here holds four:
+
+| SYSID/COMPID | Frames | What it is |
+|---|---|---|
+| `1/1` | 351,256 | The vehicle (an ArduRover boat) |
+| `255/1` | 36,720 | An external GPS injecting `GPS_INPUT` |
+| `255/190` | 15,643 | Mission Planner |
+| `254/1` | 1,560 | A second ground station |
+
+Read as one stream, they interfere. All four send `HEARTBEAT`, and a ground
+station's `customMode` is always 0, so the mode history of that flight came out
+as **7,049 entries** alternating between two values. Split by source it is
+**four**: `MANUAL → AUTO → MANUAL → AUTO`.
+
+The selector in the header picks which one everything else shows — plot, map,
+parameters, messages, timeline and analysis. It opens on the vehicle, chosen by
+its `HEARTBEAT`'s MAV_TYPE rather than by frame count, so a chatty sensor cannot
+be mistaken for the aircraft. **All sources** puts them back together if you want
+to see the link as it was recorded.
+
+Two things deliberately cross the boundary. Commands (`COMMAND_LONG` /
+`COMMAND_INT`) are filed under the vehicle they were aimed at as well as the
+station that sent them — every command on that log comes from the GCS, so
+filtering by sender alone would leave the vehicle with none. Mission transfers
+are filed under both ends too, since an upload runs GCS→vehicle and a download
+runs the other way.
+
+Knowing the vehicle also names its modes: `customMode` 10 is `AUTO` on a Rover
+and `AUTOTUNE` on a Copter, and the viewer now says which. A `.bin` gets the same
+treatment from its firmware banner (`ArduRover V4.6.3`), so both formats read
+alike. A `.bin` has no sources to choose between, so it shows no selector.
+
 ## Downloading the displayed window
 
 Drag across the time series to zoom into a stretch of the flight, then use
@@ -66,6 +103,17 @@ Two formats:
   ones you are not plotting and ones you dropped from memory — as columns that
   read straight into pandas or `jq`. Only what was recorded *inside* the window,
   so parameters and the flight plan can come out empty. Optionally gzipped.
+
+  A `.tlog` is written per source (format 2): keys in `messages` read
+  `"1/1:ATTITUDE"`, a `sources` array lists who was on the link, `params` and
+  `mission` nest under the same source key, and each mode, message and command
+  carries the address it came from — for a command, the sender, with the
+  recipient alongside it. A `.bin` has no addresses and keeps the flat shape it
+  has always had; `sources` being empty is how you tell the two apart.
+
+**Both formats always cover every MAVLink source**, whichever one the header is
+showing. A slice is a cut of the file rather than of the view, and dropping a
+source would leave acknowledgements without their commands.
 
 Every slice is reframed and checked against what the scan planned before you get
 it: byte-for-byte record counts per message type, no unaccounted bytes, and every
@@ -90,7 +138,8 @@ The cut happens in your browser. Nothing is uploaded.
 
 ```
 src/parsers/      Log parsers (source / dataflash / tlog / worker) + mission extraction
-                  (mission.ts) and standalone plan files (missionFile.ts)
+                  (mission.ts), standalone plan files (missionFile.ts), and
+                  project.ts, which picks one MAVLink source out of a parse
 src/export/       Cutting the displayed window back out as a file (slicer / JSON / download)
 src/lib/          Pure helpers over the columnar model (series, signal, stats, formatting)
 src/components/   UI (Map / Plot / Timeline / FieldTree / ...)
@@ -106,6 +155,10 @@ Design seams:
   directly; it accesses bytes only through `read(range?): Promise<Uint8Array>`. Supporting
   Drive/S3 or range streaming only takes one extra implementation.
 - Backend `storage.Storage` (`internal/storage`): an interface for a future log-persistence backend.
+- `ParsedLog` -> `LogData` (`src/parsers/project.ts`): parsers return every MAVLink source
+  separately; every view still reads the single `LogData` it always has. Choosing a source
+  hands back the arrays the parser built rather than copying them, so the split costs no
+  memory — `src/parsers/project.test.ts` pins that by identity.
 
 ## Development
 

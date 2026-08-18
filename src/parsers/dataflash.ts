@@ -15,11 +15,13 @@
 // damage and which records inherit a timestamp. Sharing the loop makes that
 // agreement structural instead of something a test has to keep watch over.
 
-import type { LogData, MissionStep, ModeChange, TextMessage } from '../model/log.ts';
+import type { MissionStep, ModeChange, ParsedLog, SourceData, TextMessage } from '../model/log.ts';
+import { ALL_SOURCES } from '../model/log.ts';
 import type { LogSource } from './source.ts';
 import { FORMAT_TYPES, formatSize } from './formatChars.ts';
 import { LogBuilder, extractTrajectory, normalizeEvents, type ColumnDef } from './columnar.ts';
 import { MissionCollector, sniffDegrees } from './mission.ts';
+import { kindFromFirmware, modeLabel } from '../lib/vehicleModes.ts';
 
 export const HEAD1 = 0xa3;
 export const HEAD2 = 0x95;
@@ -259,9 +261,12 @@ interface ParseState {
   mission: MissionCollector;
   minTime: number;
   maxTime: number;
+  /** Firmware banner, from `VER.FWS` or the first `MSG` that names a vehicle.
+   *  Picks the mode table; null when the log never says what flew it. */
+  firmware: string | null;
 }
 
-export async function parseDataflash(source: LogSource, opts: ParseOptions = {}): Promise<LogData> {
+export async function parseDataflash(source: LogSource, opts: ParseOptions = {}): Promise<ParsedLog> {
   const st: ParseState = {
     builder: new LogBuilder(),
     params: {},
@@ -271,6 +276,7 @@ export async function parseDataflash(source: LogSource, opts: ParseOptions = {})
     mission: new MissionCollector(),
     minTime: Infinity,
     maxTime: -Infinity,
+    firmware: null,
   };
 
   await scanDataflash(
@@ -319,11 +325,15 @@ export async function parseDataflash(source: LogSource, opts: ParseOptions = {})
   // the vehicle's.
   const missionSteps = normalizeEvents(st.missionSteps, (s) => s.seq);
 
-  return {
-    source: 'bin',
+  // Labelled here rather than while scanning: `VER` and the firmware banner can
+  // both follow the first `MODE` in the file.
+  const kind = st.firmware === null ? null : kindFromFirmware(st.firmware);
+  const modes = st.modes.map((m) => ({ ...m, mode: modeLabel(kind, m.modeNum) }));
+
+  const data: SourceData = {
     messages,
     params: st.params,
-    modes: st.modes,
+    modes,
     texts: st.texts,
     // A .bin records what the vehicle did, not what a GCS asked of it: there is
     // no COMMAND_LONG equivalent on disk. `CMD` looks like one but is the
@@ -332,6 +342,16 @@ export async function parseDataflash(source: LogSource, opts: ParseOptions = {})
     missionSteps,
     trajectory,
     mission: st.mission.finalize(),
+  };
+
+  // One source, keyed by the same sentinel a tlog uses for "all of them", so a
+  // .bin takes the identity path through projectLog rather than a branch of
+  // its own. `sources` stays empty: there is nothing here to choose between,
+  // and that is what tells the UI not to offer a selector.
+  return {
+    source: 'bin',
+    sources: [],
+    bySource: new Map([[ALL_SOURCES, data]]),
     startTime: minTime,
     endTime: maxTime,
   };
@@ -406,15 +426,34 @@ function extractSpecial(
     }
     case 'MSG': {
       const m = values['Message'];
-      if (typeof m === 'string') st.texts.push({ time, text: m });
+      if (typeof m !== 'string') break;
+      st.texts.push({ time, text: m });
+      // A log opens with several banner lines and the firmware one is not
+      // always first — 00000008.BIN starts with "EKF variance". Take the first
+      // line that names a vehicle, and only if `VER` has not already said.
+      if (st.firmware === null && kindFromFirmware(m) !== null) st.firmware = m;
+      break;
+    }
+    case 'VER': {
+      // The authoritative answer, when the log has one. `BT` is the HAL board
+      // type (10 = ChibiOS) and merely happens to equal MAV_TYPE_GROUND_ROVER,
+      // so the string is the only usable field here.
+      const fws = values['FWS'];
+      if (typeof fws === 'string' && kindFromFirmware(fws) !== null) st.firmware = fws;
       break;
     }
     case 'MODE': {
+      // `Mode` is the mode number (the `M` format char is a uint8 the GCS is
+      // meant to name); `ModeNum` repeats it. Preferring `Mode` is what this
+      // reader has always done, and both fields agree in every log measured.
       const mode = values['Mode'];
       const num = values['ModeNum'];
-      const label = typeof mode === 'number' ? `Mode ${mode}` : String(mode ?? num ?? '?');
+      const modeNum = typeof mode === 'number' ? mode : typeof num === 'number' ? num : NaN;
       // Collapse consecutive identical modes (MODE can be logged periodically).
-      if (st.modes[st.modes.length - 1]?.mode !== label) st.modes.push({ time, mode: label });
+      if (st.modes[st.modes.length - 1]?.modeNum !== modeNum) {
+        // Labelled after the scan: `VER` can follow `MODE` in the file.
+        st.modes.push({ time, mode: '', modeNum });
+      }
       break;
     }
     // One item as it *starts executing* (4.6+). Shares CMD's layout but means

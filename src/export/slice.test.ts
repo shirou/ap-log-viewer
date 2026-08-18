@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { common, minimal } from 'mavlink-mappings';
 import { parseDataflash } from '../parsers/dataflash.ts';
 import { parseTlog } from '../parsers/tlog.ts';
+import { projectLog } from '../parsers/project.ts';
 import { rangeIndices } from '../lib/series.ts';
 import type { LogData } from '../model/log.ts';
+import { ALL_SOURCES } from '../model/log.ts';
 import type { LogKind } from '../model/log.ts';
 import {
   GPS_COLUMNS,
@@ -76,10 +78,16 @@ async function cut(
   return { all, source, scan, out };
 }
 
-const reparse = (out: Uint8Array, kind: LogKind): Promise<LogData> =>
-  kind === 'bin'
-    ? parseDataflash(new MemorySource('o.bin', out))
-    : parseTlog(new MemorySource('o.tlog', out));
+// Projected back to a single LogData, because that is what these assertions
+// have always been written against. `ALL_SOURCES` keeps every sender, so a
+// slice's contents are judged exactly as before splitting existed.
+const reparse = async (out: Uint8Array, kind: LogKind): Promise<LogData> =>
+  projectLog(
+    kind === 'bin'
+      ? await parseDataflash(new MemorySource('o.bin', out))
+      : await parseTlog(new MemorySource('o.tlog', out)),
+    ALL_SOURCES,
+  );
 
 /** Reframe the assembled slice and hold it to what the scan planned. */
 async function verify(scan: SliceScan, out: Uint8Array, t0: number, t1: number, mode: SliceMode = 'original') {
@@ -595,7 +603,13 @@ describe('slicing a .tlog', () => {
     const { out } = await cut(TLOG_FIXTURE, 'tlog', 2_000_000, 3_000_000);
     const sliced = await reparse(out, 'tlog');
     expect(sliced.messages.HEARTBEAT.time.length).toBe(1);
-    expect(sliced.modes.map((m) => m.mode)).toEqual(['Mode 5']);
+    // Named, not numbered: the vehicle heartbeat this test is about carries
+    // `type: 2` (QUADROTOR), so the mode table is Copter's and 5 is LOITER.
+    // The ground station's heartbeat would have brought customMode 0 instead —
+    // the whole point of preferring the vehicle's — so the label is also what
+    // distinguishes the two here.
+    expect(sliced.modes.map((m) => m.mode)).toEqual(['LOITER']);
+    expect(sliced.modes.map((m) => m.modeNum)).toEqual([5]);
   });
 
   it('carries a mission transfer across, boundaries and all', async () => {
