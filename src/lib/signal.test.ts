@@ -254,3 +254,33 @@ describe('detrend', () => {
     expect(out[4]).toBeCloseTo(0, 9);
   });
 });
+
+// What a merged series does to a rate readout, recorded rather than fixed.
+//
+// Selecting a SYSID group interleaves every component's copy of a type it sent
+// (see `projectLog`), and the analysis modules read the projection. Two
+// components at the same rate therefore look like one component at twice it —
+// `SpectrumAnalysis` prints `1 / dtSec` as the sample rate. That is the price
+// of merging rather than dropping a component's data, and it is paid only by a
+// type more than one component sends; picking the component's own row shows the
+// real rate. These two tests exist so the trade is visible and cannot change
+// unnoticed.
+describe('a merged series and its apparent rate', () => {
+  const values = (n: number) => Float64Array.from({ length: n }, (_, i) => i);
+
+  it('reads at double the rate when two components interleave', () => {
+    const one = Float64Array.from([0, 100, 200, 300, 400, 500]);
+    const merged = Float64Array.from([0, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 550]);
+
+    expect(toUniform(one, values(one.length), 0, one.length)!.dtSec).toBeCloseTo(100e-6);
+    expect(toUniform(merged, values(merged.length), 0, merged.length)!.dtSec).toBeCloseTo(50e-6);
+  });
+
+  it('refuses to run at all when two components share timestamps exactly', () => {
+    // Every stamp duplicated: the median gap is 0, which `toUniform` reports as
+    // "no usable grid" rather than dividing by it.
+    const doubled = Float64Array.from([0, 0, 100, 100, 200, 200, 300, 300]);
+    expect(medianStep(doubled, 0, doubled.length)).toBe(0);
+    expect(toUniform(doubled, values(doubled.length), 0, doubled.length)).toBeNull();
+  });
+});

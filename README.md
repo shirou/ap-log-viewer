@@ -64,10 +64,39 @@ as **7,049 entries** alternating between two values. Split by source it is
 **four**: `MANUAL → AUTO → MANUAL → AUTO`.
 
 The selector in the header picks which one everything else shows — plot, map,
-parameters, messages, timeline and analysis. It opens on the vehicle, chosen by
-its `HEARTBEAT`'s MAV_TYPE rather than by frame count, so a chatty sensor cannot
-be mistaken for the aircraft. **All sources** puts them back together if you want
-to see the link as it was recorded.
+parameters, messages, timeline and analysis. **All sources** puts them back
+together if you want to see the link as it was recorded.
+
+A SYSID is one aircraft, though, and the COMPIDs under it are the boxes bolted
+to it — the autopilot, a gimbal, a companion computer. So the selector offers
+two grains side by side: the system, and each component indented beneath it.
+
+```
+All sources · 36 types
+1/1 · Surface boat · Autopilot1 · 30 types · 351,256 rec
+sys 255 · Gcs · 2 comp · 8 types · 52,363 rec
+　　255/1 · Gcs · Autopilot1 · 2 types · 36,720 rec
+　　255/190 · Gcs · Missionplanner · 7 types · 15,643 rec
+254/1 · Gcs · Autopilot1 · 2 types · 1,560 rec
+```
+
+A system with a single component gets no row of its own — merging one source is
+the identity, and two rows that cannot differ by a byte are one row too many.
+The viewer opens on the aircraft's system, picked by its `HEARTBEAT`'s MAV_TYPE
+rather than by frame count, so a chatty sensor cannot be mistaken for the
+aircraft.
+
+Choosing a system merges its components: their messages interleave in time, and
+their text, commands and mission progress are pooled. Its **mode history is the
+vehicle's alone** — every component sends `HEARTBEAT` and a peripheral's
+`customMode` is always 0, so a plain union would open the aircraft's history
+with a mode it never entered. Where no component names a vehicle (two ground
+stations sharing a SYSID) there is nothing to prefer and all of them are kept.
+
+The merge is the price of seeing an aircraft whole: a type more than one
+component sends comes out interleaved, so reading `HEARTBEAT.customMode` off a
+system's plot shows both components' values and the analysis tab reads the
+combined rate. Pick the component's own row to see it unmixed.
 
 Two things deliberately cross the boundary. Commands (`COMMAND_LONG` /
 `COMMAND_INT`) are filed under the vehicle they were aimed at as well as the
