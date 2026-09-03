@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useLogStore } from '../store/logStore.ts';
-import { fieldKey } from '../model/log.ts';
+import { ALL_SOURCES, fieldKey, parseGroupKey } from '../model/log.ts';
+import { selectionKeys } from '../parsers/project.ts';
 import { parseQuery, searchMessages } from '../lib/fieldSearch.ts';
 
 /**
@@ -29,6 +30,7 @@ export default function FieldTree() {
   const purgeMessage = useLogStore((s) => s.purgeMessage);
   const purgeUnselected = useLogStore((s) => s.purgeUnselected);
   const parsed = useLogStore((s) => s.parsed);
+  const selection = useLogStore((s) => s.selection);
   const [filter, setFilter] = useState('');
   // Two maps rather than one, because a search opens messages on its own: a
   // single map would carry "I collapsed this" across to the next query, where
@@ -47,6 +49,17 @@ export default function FieldTree() {
 
   const total = Object.keys(log.messages).length;
   const multiSource = log.sources.length > 1;
+  // What ✕ actually reaches. It has always followed the selection — under "all
+  // sources" it clears every sender — but a SYSID group opens by default, so
+  // the wide case is now the ordinary one and the tooltip has to say so. There
+  // is no confirm here, deliberately: the wider "all sources" has never had one
+  // either, and gating only the narrower case would be backwards.
+  const scope = parsed ? selectionKeys(parsed, selection).length : 1;
+  const groupSysid = parseGroupKey(selection);
+  const purgeScope =
+    groupSysid !== null && scope > 1 ? ` from all ${scope} components of system ${groupSysid}`
+      : selection === ALL_SOURCES && scope > 1 ? ` from all ${scope} MAVLink sources`
+        : '';
   // Counted across every source, because that is what the button clears. Taking
   // it from the projection instead would quote a number lower than what goes:
   // a type only some other vehicle sent is not in view, and would still be
@@ -107,7 +120,7 @@ export default function FieldTree() {
                 <span className="count">{m.time.length.toLocaleString()}</span>
                 <button
                   className="purge"
-                  title={`Remove ${m.name} from memory`}
+                  title={`Remove ${m.name}${purgeScope || ' from memory'}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     purgeMessage(m.name);

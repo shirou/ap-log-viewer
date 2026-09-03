@@ -306,6 +306,61 @@ function loadTwoSources() {
   return { parsed, vehicle, gcs };
 }
 
+/**
+ * One aircraft of three components, beside a second aircraft of one.
+ *
+ * Every component sends HEARTBEAT, so purging it under the group has to reach
+ * all three — and stop before the other aircraft.
+ */
+function loadGroupedSystem() {
+  const col = (v: number[]) => Float64Array.from(v);
+  const series = (name: string, time: number[], fields: Record<string, number[]>) => ({
+    name, time: col(time), labels: Object.keys(fields),
+    fields: Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, col(v)])),
+  });
+  const empty = { time: col([]), lat: col([]), lon: col([]), alt: col([]), heading: col([]) };
+  const track = { time: col([0, 1000]), lat: col([35, 36]), lon: col([139, 140]), alt: col([1, 2]), heading: col([90, 90]) };
+  const bare = { params: {}, modes: [], texts: [], commands: [], missionSteps: [], mission: [] };
+
+  const vehicle4 = {
+    messages: {
+      HEARTBEAT: series('HEARTBEAT', [0, 1000], { customMode: [0, 10] }),
+      GLOBAL_POSITION_INT: series('GLOBAL_POSITION_INT', [0, 1000], { lat: [35e7, 36e7] }),
+    },
+    ...bare, trajectory: track,
+  };
+  const peripheral = (t: number[]) => ({
+    messages: { HEARTBEAT: series('HEARTBEAT', t, { customMode: t.map(() => 0) }) },
+    ...bare, trajectory: empty,
+  });
+  const other = {
+    messages: { HEARTBEAT: series('HEARTBEAT', [500], { customMode: [0] }) },
+    ...bare, trajectory: empty,
+  };
+  const parsed = {
+    source: 'tlog', startTime: 0, endTime: 2000,
+    sources: [
+      { sysid: 4, compid: 128, mavType: 0, records: 6, startTime: 0, endTime: 1000 },
+      { sysid: 4, compid: 158, mavType: 0, records: 5, startTime: 0, endTime: 1000 },
+      { sysid: 4, compid: 1, mavType: 11, records: 4, startTime: 0, endTime: 1000 },
+      { sysid: 1, compid: 1, mavType: 11, records: 1, startTime: 0, endTime: 1000 },
+    ],
+    bySource: new Map<string, unknown>([
+      ['4/128', peripheral([100, 1100])],
+      ['4/158', peripheral([200, 1200])],
+      ['4/1', vehicle4],
+      ['1/1', other],
+    ]),
+  } as unknown as ParsedLog;
+
+  const log = projectLog(parsed, '4/*');
+  useLogStore.setState({
+    parsed, selection: '4/*', log, loadId: 5, mapKey: 5,
+    selectedFields: [], axisOverride: {}, viewRange: null, cursorTime: 0, playing: false,
+  });
+  return { parsed, vehicle4 };
+}
+
 describe('setSelection', () => {
   it('shows the chosen source and drops fields it does not carry', () => {
     loadTwoSources();
@@ -455,5 +510,63 @@ describe('purging with sources', () => {
     expect(after.parsed!.bySource.get('1/1')!.messages.HEARTBEAT).toBeUndefined();
     // The other source is cleared too, even though it was never on screen.
     expect(Object.keys(after.parsed!.bySource.get('255/190')!.messages)).toEqual([]);
+  });
+
+  // A SYSID group is one aircraft on screen, so ✕ takes the type off all of it —
+  // and stops there. The other aircraft in the file keeps its copy.
+  it('under a SYSID group, clears the type from every component of it', () => {
+    loadGroupedSystem();
+    useLogStore.getState().purgeMessage('HEARTBEAT');
+
+    const after = useLogStore.getState();
+    for (const key of ['4/1', '4/128', '4/158']) {
+      expect(after.parsed!.bySource.get(key)!.messages.HEARTBEAT).toBeUndefined();
+    }
+    expect(after.parsed!.bySource.get('1/1')!.messages.HEARTBEAT).toBeDefined();
+    expect(after.log!.messages.HEARTBEAT).toBeUndefined();
+  });
+
+  // The map's promise, restated for a group. Three assertions, not one: the
+  // empty track is a module singleton, so "same reference before and after"
+  // alone is also satisfied by a merge that hands back nothing at all.
+  it('under a SYSID group, keeps the map\'s track by reference', () => {
+    const { vehicle4 } = loadGroupedSystem();
+    const before = useLogStore.getState().log!.trajectory;
+    useLogStore.getState().purgeMessage('GLOBAL_POSITION_INT');
+
+    const after = useLogStore.getState().log!.trajectory;
+    expect(after).toBe(before);
+    expect(after).toBe(vehicle4.trajectory);
+    expect(after.lat.length).toBeGreaterThan(0);
+  });
+
+  // A .bin has no addresses: its one entry is keyed ALL_SOURCES and `sources` is
+  // empty. Scoping the purge through `sources` would leave nothing to drop and
+  // turn the button into a silent no-op — while every assertion about pins and
+  // selected fields still passed.
+  it('drops the columns of a .bin, which has no addresses at all', () => {
+    const messages = {
+      ATT: { name: 'ATT', time: Float64Array.from([0]), labels: ['Roll'], fields: { Roll: Float64Array.from([0]) } },
+      GPS: { name: 'GPS', time: Float64Array.from([0]), labels: ['Alt'], fields: { Alt: Float64Array.from([1]) } },
+    };
+    const data = {
+      messages, params: {}, modes: [], texts: [], commands: [], missionSteps: [], mission: [],
+      trajectory: { time: Float64Array.from([]), lat: Float64Array.from([]), lon: Float64Array.from([]), alt: Float64Array.from([]), heading: Float64Array.from([]) },
+    };
+    const parsed = {
+      source: 'bin', startTime: 0, endTime: 1, sources: [],
+      bySource: new Map<string, unknown>([[ALL_SOURCES, data]]),
+    } as unknown as ParsedLog;
+    useLogStore.setState({
+      parsed, selection: ALL_SOURCES, log: projectLog(parsed, ALL_SOURCES),
+      selectedFields: [{ message: 'GPS', field: 'Alt' }], axisOverride: {},
+    });
+
+    useLogStore.getState().purgeMessage('ATT');
+
+    const after = useLogStore.getState();
+    expect(after.parsed!.bySource.get(ALL_SOURCES)!.messages.ATT).toBeUndefined();
+    expect(after.parsed!.bySource.get(ALL_SOURCES)!.messages.GPS).toBeDefined();
+    expect(after.log!.messages.ATT).toBeUndefined();
   });
 });

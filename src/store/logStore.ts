@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { FieldRef, LogData, ParseMessage, ParsedLog, Waypoint } from '../model/log.ts';
 import { ALL_SOURCES, fieldKey } from '../model/log.ts';
-import { defaultSelection, projectLog } from '../parsers/project.ts';
+import { defaultSelection, projectLog, selectionKeys } from '../parsers/project.ts';
 import { parseMissionFile } from '../parsers/missionFile.ts';
 import type { AxisSide } from '../lib/axisGroups.ts';
 
@@ -84,7 +84,7 @@ export interface LogState {
    * frees anything.
    */
   parsed: ParsedLog | null;
-  /** Which source `log` shows: a `sourceKey`, or `ALL_SOURCES`. */
+  /** Which source `log` shows: a `sourceKey`, a `groupKey`, or `ALL_SOURCES`. */
   selection: string;
   /**
    * Increments on each loaded log.
@@ -152,7 +152,8 @@ export interface LogState {
   setTheme: (t: Theme) => void;
   toggleTheme: () => void;
   parseFile: (file: File) => void;
-  /** Show one MAVLink source, or `ALL_SOURCES` for the unsplit log. */
+  /** Show one MAVLink source or one SYSID group, or `ALL_SOURCES` for the
+   *  unsplit log. */
   setSelection: (key: string) => void;
   /** Load a .waypoints/.txt (QGC WPL) or .plan (QGC JSON) flight plan. */
   loadMissionFile: (file: File) => Promise<void>;
@@ -341,19 +342,29 @@ export const useLogStore = create<LogState>((set, get) => ({
       if (msg.type === 'progress') {
         set({ progress: msg.ratio });
       } else if (msg.type === 'done') {
-        const selection = defaultSelection(msg.parsed);
-        const log = projectLog(msg.parsed, selection);
-        set((s) => ({
-          status: 'ready',
-          progress: 1,
-          parsed: msg.parsed,
-          selection,
-          log,
-          loadId: s.loadId + 1,
-          mapKey: s.mapKey + 1,
-          cursorTime: log.startTime,
-          selectedFields: defaultFields(log),
-        }));
+        // The projection runs here, on the main thread, and since the opening
+        // selection became a SYSID group it merges rather than handing back the
+        // parser's own arrays — which means it allocates. A throw from that
+        // would skip the `set` below and leave `status` on 'parsing' forever,
+        // with the bar at 100% and nothing said. Report it like any other
+        // failure instead.
+        try {
+          const selection = defaultSelection(msg.parsed);
+          const log = projectLog(msg.parsed, selection);
+          set((s) => ({
+            status: 'ready',
+            progress: 1,
+            parsed: msg.parsed,
+            selection,
+            log,
+            loadId: s.loadId + 1,
+            mapKey: s.mapKey + 1,
+            cursorTime: log.startTime,
+            selectedFields: defaultFields(log),
+          }));
+        } catch (err) {
+          set({ status: 'error', error: err instanceof Error ? err.message : String(err) });
+        }
         done();
       } else {
         set({ status: 'error', error: msg.message });
@@ -441,10 +452,11 @@ export const useLogStore = create<LogState>((set, get) => ({
   purgeMessage: (name) => {
     const { parsed, selection, log, selectedFields, axisOverride } = get();
     if (!parsed || !log?.messages[name]) return;
-    // Whatever is on screen is what goes. Under a single source that leaves the
-    // other sources' copies of the type alone; under "all sources" it is all of
-    // them, because that is what "on screen" means there.
-    const scope = selection === ALL_SOURCES ? [...parsed.bySource.keys()] : [selection];
+    // Whatever is on screen is what goes. Under a single address that leaves the
+    // other sources' copies of the type alone; under a SYSID group it is every
+    // component of that aircraft; under "all sources" it is all of them —
+    // because that is what "on screen" means in each case.
+    const scope = selectionKeys(parsed, selection);
     const next = dropTypes(parsed, scope, (n) => n === name);
     const kept = selectedFields.filter((r) => r.message !== name);
     // New `log` ref re-renders consumers; `loadId`/`mapKey` stay put so neither

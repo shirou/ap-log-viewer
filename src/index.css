@@ -153,7 +153,9 @@ input[type="text"] {
 /* Replaces the message-type readout, so it has to survive the same squeeze the
    readout did: the header is a single flex row until 768px, where it wraps. */
 .header .source-select {
-  max-width: 22em;
+  /* A group row carries a component count and a system-wide record total on top
+     of what an address row says, so it needs more room than the old readout. */
+  max-width: 26em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

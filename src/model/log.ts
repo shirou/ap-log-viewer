@@ -127,6 +127,29 @@ export function sourceKey(s: SourceId): string {
 }
 
 /**
+ * `<select>` value for every component of one system.
+ *
+ * A SYSID is one aircraft; its COMPIDs are the autopilot, the gimbal, the
+ * companion computer riding on it. This names the aircraft rather than one of
+ * the boxes bolted to it. Never a key of `bySource` — a group is resolved to
+ * its members and merged on demand (see `selectionKeys` in the projection).
+ */
+export function groupKey(sysid: number): string {
+  return `${sysid}/*`;
+}
+
+/**
+ * The sysid a group key names, or null when the key is not one.
+ *
+ * Strict, because this is the only place a string from outside — a `<select>`
+ * value — becomes a number. `Number('')` is 0, so a lax test would read a bare
+ * `'/*'` as system 0.
+ */
+export function parseGroupKey(key: string): number | null {
+  return /^\d+\/\*$/.test(key) ? Number(key.slice(0, -2)) : null;
+}
+
+/**
  * Stands for "don't split — show every source at once".
  *
  * Also the sole key a .bin's `bySource` uses, which is what lets both formats
@@ -135,7 +158,13 @@ export function sourceKey(s: SourceId): string {
  */
 export const ALL_SOURCES = '*';
 
-/** One row of the source selector. */
+/**
+ * One selectable MAVLink address.
+ *
+ * The material a selector row is built from rather than the row itself: a row
+ * can stand for a whole system, which is more than one of these (see
+ * `SourceOption` in the projection).
+ */
 export interface SourceInfo extends SourceId {
   /** MAV_TYPE from this source's HEARTBEAT, or undefined when it sent none. */
   mavType?: number;
@@ -228,7 +257,8 @@ export interface LogData extends SourceData {
   endTime: number;
   /** Selectable sources, most frames first. Empty for a .bin. */
   sources: SourceInfo[];
-  /** Which source the fields above describe: a `sourceKey`, or `ALL_SOURCES`. */
+  /** Which source the fields above describe: a `sourceKey`, a `groupKey`, or
+   *  `ALL_SOURCES`. */
   selection: string;
 }
 
